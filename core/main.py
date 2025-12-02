@@ -1,12 +1,11 @@
 from machine import Pin
 import time
+import math
 import st7789
 from ili9341 import Display, color565
 
 from config import display_ili9341_config, display_lilygo_config
-
-# 🔤 импорт шрифта (ПОДСТАВЬ свой, если имя другое)
-import vga1_16x32 as font   # или: from fonts.bitmap import vga1_16x32 as font
+import vga1_16x32 as font
 
 
 class ESP32:
@@ -16,7 +15,7 @@ class ESP32:
 
         self.display1.init()
 
-        # счетчик нажатий
+        # значение "скорости"
         self.left_count = 0
 
         # флажок из прерывания
@@ -26,10 +25,8 @@ class ESP32:
         self.left_btn = Pin(0, Pin.IN, Pin.PULL_UP)
         self.right_btn = Pin(35, Pin.IN)
 
-        # IRQ на левую кнопку
         self.left_btn.irq(trigger=Pin.IRQ_FALLING, handler=self._left_irq)
 
-        # подсветка встроенного
         try:
             self.display1.backlight_on()
         except AttributeError:
@@ -38,32 +35,65 @@ class ESP32:
             except:
                 pass
 
-        # подсветка внешнего
         self.bl2 = Pin(25, Pin.OUT)
         self.bl2.on()
 
-        # первый вывод счётчика
-        self.draw_counter()
+        self.draw_speedometer()
 
     # ==================== IRQ ====================
 
     def _left_irq(self, pin):
         self._left_pressed = True
 
-    # ==================== Логика ====================
+    # ==================== Спидометр ====================
 
-    def draw_counter(self):
+    def draw_arc(self, cx, cy, r, color):
+        """Рисование дуги (нижняя половина круга)."""
+        for angle in range(0, 181, 2):  # шаг 2° для скорости
+            rad = math.radians(angle)
+            x = int(cx + r * math.cos(rad))
+            y = int(cy + r * math.sin(rad))
+            self.display1.pixel(x, y, color)
+
+    def draw_needle(self, cx, cy, r, value, color):
+        """Стрелка спидометра – value от 0 до 100."""
+        # mapped value → 0…180°
+        angle = (value / 100) * 180
+        rad = math.radians(angle)
+
+        x = int(cx + r * math.cos(rad))
+        y = int(cy + r * math.sin(rad))
+
+        # простая линия (луч)
+        self.display1.line(cx, cy, x, y, color)
+
+    def draw_speedometer(self):
         self.display1.fill(st7789.BLACK)
-        text = "Count: {}".format(self.left_count)
 
-        # сигнатура: text(font, s, x, y, fg, bg)
-        self.display1.text(font, text, 10, 10, st7789.WHITE, st7789.BLACK)
+        cx = 120   # центр X (для 240×135 дисплея Lilygo)
+        cy = 110   # центр Y
+        radius = 90
+
+        # дуга спидометра
+        self.draw_arc(cx, cy, radius, st7789.BLUE)
+
+        # стрелка
+        self.draw_needle(cx, cy, radius - 10, self.left_count, st7789.RED)
+
+        # текстовое значение
+        text = "{}".format(self.left_count)
+        self.display1.text(font, text, cx - 30, 10, st7789.WHITE, st7789.BLACK)
+
+    # ==================== Кнопки ====================
 
     def process_buttons(self):
         if self._left_pressed:
             self._left_pressed = False
-            self.left_count += 1
-            self.draw_counter()
+            if self.left_count < 100:
+                self.left_count += 1
+            self.draw_speedometer()
+
+    # ==================== Внешний экран ====================
 
     def test(self):
         self.display1.fill(st7789.BLACK)
