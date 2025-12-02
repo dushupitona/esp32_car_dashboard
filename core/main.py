@@ -15,11 +15,16 @@ class ESP32:
 
         self.display1.init()
 
-        # значение "скорости"
+        # "скорость"
         self.left_count = 0
 
         # флажок из прерывания
         self._left_pressed = False
+
+        # параметры затухания скорости
+        self.DECAY_INTERVAL_MS = 200   # как часто падает скорость (мс)
+        self.DECAY_STEP = 1            # на сколько уменьшаем
+        self.last_decay_ms = time.ticks_ms()
 
         # кнопки
         self.left_btn = Pin(0, Pin.IN, Pin.PULL_UP)
@@ -45,11 +50,11 @@ class ESP32:
     def _left_irq(self, pin):
         self._left_pressed = True
 
-    # ==================== Спидометр ====================
+    # ==================== Графика спидометра ====================
 
     def draw_arc(self, cx, cy, r, color):
         """Рисование дуги (нижняя половина круга)."""
-        for angle in range(0, 181, 2):  # шаг 2° для скорости
+        for angle in range(0, 181, 2):
             rad = math.radians(angle)
             x = int(cx + r * math.cos(rad))
             y = int(cy + r * math.sin(rad))
@@ -57,40 +62,53 @@ class ESP32:
 
     def draw_needle(self, cx, cy, r, value, color):
         """Стрелка спидометра – value от 0 до 100."""
-        # mapped value → 0…180°
         angle = (value / 100) * 180
         rad = math.radians(angle)
-
         x = int(cx + r * math.cos(rad))
         y = int(cy + r * math.sin(rad))
-
-        # простая линия (луч)
         self.display1.line(cx, cy, x, y, color)
 
     def draw_speedometer(self):
         self.display1.fill(st7789.BLACK)
 
-        cx = 120   # центр X (для 240×135 дисплея Lilygo)
+        cx = 120   # центр X (для 240x135)
         cy = 110   # центр Y
         radius = 90
 
-        # дуга спидометра
+        # дуга
         self.draw_arc(cx, cy, radius, st7789.BLUE)
 
         # стрелка
         self.draw_needle(cx, cy, radius - 10, self.left_count, st7789.RED)
 
-        # текстовое значение
+        # числовое значение
         text = "{}".format(self.left_count)
         self.display1.text(font, text, cx - 30, 10, st7789.WHITE, st7789.BLACK)
 
-    # ==================== Кнопки ====================
+    # ==================== Логика кнопки + затухание ====================
 
     def process_buttons(self):
+        changed = False
+        now = time.ticks_ms()
+
+        # рост скорости по нажатию
         if self._left_pressed:
             self._left_pressed = False
             if self.left_count < 100:
-                self.left_count += 1
+                self.left_count += 3
+                changed = True
+
+        # падение скорости по времени
+        if time.ticks_diff(now, self.last_decay_ms) >= self.DECAY_INTERVAL_MS:
+            self.last_decay_ms = now
+            if self.left_count > 0:
+                self.left_count -= self.DECAY_STEP
+                if self.left_count < 0:
+                    self.left_count = 0
+                changed = True
+
+        # перерисовываем спидометр только если значение изменилось
+        if changed:
             self.draw_speedometer()
 
     # ==================== Внешний экран ====================
