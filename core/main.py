@@ -1,59 +1,33 @@
-from machine import Pin, SPI
+from machine import Pin
 import time
 import st7789
 from ili9341 import Display, color565
 
+from config import display_ili9341_config, display_lilygo_config
 
-# ---------- SPI для встроенного ST7789 (как раньше) ----------
-spi_st = SPI(2, baudrate=40_000_000, sck=Pin(18), mosi=Pin(19), miso=None)
-
-def display_lilygo_config(rotation=1):
-    return st7789.ST7789(
-        spi_st,
-        135,
-        240,
-        reset=Pin(23, Pin.OUT),
-        cs=Pin(5, Pin.OUT),
-        dc=Pin(16, Pin.OUT),
-        backlight=Pin(4, Pin.OUT),
-        rotation=rotation
-    )
-
-
-# ---------- SPI1 для внешнего 2.8" ILI9341 ----------
-spi_ili = SPI(
-    1,
-    baudrate=40_000_000,
-    sck=Pin(33),   # SCK второго дисплея
-    mosi=Pin(13),  # MOSI второго дисплея
-    miso=None      # можно добавить Pin(12), если нужен MISO
-)
-
-def display_ili9341_config(rotation=0):
-    return Display(
-        spi_ili,
-        cs=Pin(2, Pin.OUT),     # CS
-        dc=Pin(15, Pin.OUT),    # DC / RS
-        rst=Pin(27, Pin.OUT),   # RST
-        width=240,
-        height=320,
-        rotation=rotation,
-        bgr=True
-    )
+# 🔤 импорт шрифта (ПОДСТАВЬ свой, если имя другое)
+import vga1_16x32 as font   # или: from fonts.bitmap import vga1_16x32 as font
 
 
 class ESP32:
     def __init__(self):
-        self.display1 = display_lilygo_config()
-        self.display2 = display_ili9341_config()
+        self.display1 = display_lilygo_config()   # встроенный ST7789
+        self.display2 = display_ili9341_config()  # внешний ILI9341
 
-        # ST7789 нужно отдельно инициализировать
         self.display1.init()
-        # ILI9341 инициализируется внутри __init__ класса Display
+
+        # счетчик нажатий
+        self.left_count = 0
+
+        # флажок из прерывания
+        self._left_pressed = False
 
         # кнопки
-        self.left_btn = Pin(0, Pin.IN)
+        self.left_btn = Pin(0, Pin.IN, Pin.PULL_UP)
         self.right_btn = Pin(35, Pin.IN)
+
+        # IRQ на левую кнопку
+        self.left_btn.irq(trigger=Pin.IRQ_FALLING, handler=self._left_irq)
 
         # подсветка встроенного
         try:
@@ -64,16 +38,36 @@ class ESP32:
             except:
                 pass
 
-        # подсветка внешнего дисплея на GPIO25
+        # подсветка внешнего
         self.bl2 = Pin(25, Pin.OUT)
         self.bl2.on()
 
-    def test(self):
-        # встроенный ST7789
-        self.display1.fill(st7789.RED)
+        # первый вывод счётчика
+        self.draw_counter()
 
-        # внешний ILI9341
-        self.display2.clear(color565(0, 255, 0))  # зелёный фон
+    # ==================== IRQ ====================
+
+    def _left_irq(self, pin):
+        self._left_pressed = True
+
+    # ==================== Логика ====================
+
+    def draw_counter(self):
+        self.display1.fill(st7789.BLACK)
+        text = "Count: {}".format(self.left_count)
+
+        # сигнатура: text(font, s, x, y, fg, bg)
+        self.display1.text(font, text, 10, 10, st7789.WHITE, st7789.BLACK)
+
+    def process_buttons(self):
+        if self._left_pressed:
+            self._left_pressed = False
+            self.left_count += 1
+            self.draw_counter()
+
+    def test(self):
+        self.display1.fill(st7789.BLACK)
+        self.display2.clear(color565(0, 255, 0))
 
 
 if __name__ == '__main__':
@@ -81,4 +75,5 @@ if __name__ == '__main__':
     esp.test()
 
     while True:
-        time.sleep(1)
+        esp.process_buttons()
+        time.sleep_ms(10)
