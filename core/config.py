@@ -6,7 +6,7 @@ from machine import Pin, SPI
 # ---------- SPI для встроенного ST7789 (как раньше) ----------
 spi_st = SPI(2, baudrate=40_000_000, sck=Pin(18), mosi=Pin(19), miso=None)
 
-def display_lilygo_config(rotation=1):
+def display_lilygo_config(rotation=3):
     return st7789.ST7789(
         spi_st,
         135,

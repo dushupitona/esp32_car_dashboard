@@ -54,19 +54,20 @@ class ESP32:
 
     def draw_arc(self, cx, cy, r, color):
         """Рисование дуги (нижняя половина круга)."""
-        for angle in range(0, 181, 2):
+        for angle in range(180, 361, 2):
             rad = math.radians(angle)
             x = int(cx + r * math.cos(rad))
             y = int(cy + r * math.sin(rad))
             self.display1.pixel(x, y, color)
 
     def draw_needle(self, cx, cy, r, value, color):
-        """Стрелка спидометра – value от 0 до 100."""
-        angle = (value / 100) * 180
+        """Стрелка слева направо (от 180° до 360°)."""
+        angle = 180 + (value / 100) * 180   # 180° → 360°
         rad = math.radians(angle)
         x = int(cx + r * math.cos(rad))
         y = int(cy + r * math.sin(rad))
         self.display1.line(cx, cy, x, y, color)
+
 
     def draw_speedometer(self):
         self.display1.fill(st7789.BLACK)
@@ -124,4 +125,4 @@ if __name__ == '__main__':
 
     while True:
         esp.process_buttons()
-        time.sleep_ms(10)
+        time.sleep_ms(5)
