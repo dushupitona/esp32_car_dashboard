@@ -29,10 +29,6 @@ class OuterDisplay:
         self.display = display_ili9341_config()   # 240x320, rotation=0
         self.display.clear(BLACK)
 
-        # подсветка внешнего (если на GPIO25)
-        self.bl2 = Pin(25, Pin.OUT)
-        self.bl2.on()
-
         # параметры "физики"
         self.max_speed = max_speed
         self.max_rpm = max_rpm
@@ -289,42 +285,57 @@ class ESP32:
         # физические значения
         self.speed_kmh = 0
 
-        # затухание
+        # затухание скорости
         self.DECAY_INTERVAL_MS = 200
         self.DECAY_STEP_KMH = 1
         self.last_decay_ms = time.ticks_ms()
 
-        # флаг прерывания кнопки
-        self._btn_pressed = False
+        # кнопка "газ" (увеличение скорости)
+        self._btn_turn_pressed = False
+        self.btn_turn = Pin(12, Pin.IN, Pin.PULL_UP)
+        self.btn_turn.irq(trigger=Pin.IRQ_FALLING, handler=self._btn_turn_irq)
 
-        # кнопка на GPIO0
-        self.btn = Pin(0, Pin.IN, Pin.PULL_UP)
-        self.btn.irq(trigger=Pin.IRQ_FALLING, handler=self._btn_irq)
+        # --- поворотники: светодиоды ---
+        self.led_right = Pin(25, Pin.OUT)
+        self.led_left = Pin(26, Pin.OUT)
+
+        # изначально выключены
+        self.led_right.off()
+        self.led_left.off()
+
+        # --- поворотники: кнопки ---
+        self.btn_left = Pin(0, Pin.IN, Pin.PULL_UP)
+        self.btn_right = Pin(35, Pin.IN, Pin.PULL_UP)
+
+        # --- мигание поворотников ---
+        self.BLINK_INTERVAL_MS = 500  # период мигания, мс
+        self.last_blink_ms = time.ticks_ms()
+        self.blink_state = False      # False = выключено, True = включено
 
         # первый раз обновим всё
         self.outer.update(self.speed_kmh, force=True)
 
     # ================= IRQ =================
 
-    def _btn_irq(self, pin):
-        self._btn_pressed = True
+    def _btn_turn_irq(self, pin):
+        self._btn_turn_pressed = True
 
-    # ================= Логика: кнопка + затухание =================
+    # ================= Логика: кнопка + затухание + поворотники =================
 
     def process(self):
         changed = False
         now = time.ticks_ms()
 
-        # кнопка повышает скорость
-        if self._btn_pressed:
-            self._btn_pressed = False
+        # --- газ: кнопка увеличивает скорость ---
+        if self._btn_turn_pressed:
+            self._btn_turn_pressed = False
             if self.speed_kmh < self.outer.max_speed:
                 self.speed_kmh += 5
                 if self.speed_kmh > self.outer.max_speed:
                     self.speed_kmh = self.outer.max_speed
                 changed = True
 
-        # затухание
+        # --- затухание скорости ---
         if time.ticks_diff(now, self.last_decay_ms) >= self.DECAY_INTERVAL_MS:
             self.last_decay_ms = now
             if self.speed_kmh > 0:
@@ -333,8 +344,40 @@ class ESP32:
                     self.speed_kmh = 0
                 changed = True
 
+        # --- чтение кнопок поворотников (активный уровень: 0 = нажата) ---
+        left_pressed = (self.btn_left.value() == 0)
+        right_pressed = (self.btn_right.value() == 0)
+
+        # если хотя бы один поворотник активен — обновляем фазу мигания
+        if left_pressed or right_pressed:
+            if time.ticks_diff(now, self.last_blink_ms) >= self.BLINK_INTERVAL_MS:
+                self.last_blink_ms = now
+                self.blink_state = not self.blink_state
+        else:
+            # если кнопки отпущены — поворотники гасим и сбрасываем фазу
+            self.blink_state = False
+
+        # --- управление светодиодами поворотников ---
+        if left_pressed:
+            # левый должен мигать
+            if self.blink_state:
+                self.led_left.on()
+            else:
+                self.led_left.off()
+        else:
+            self.led_left.off()
+
+        if right_pressed:
+            # правый должен мигать
+            if self.blink_state:
+                self.led_right.on()
+            else:
+                self.led_right.off()
+        else:
+            self.led_right.off()
+
+        # --- обновление приборов ---
         if changed:
-            # вот главный момент: просто передаём скорость
             self.outer.update(self.speed_kmh)
 
 
