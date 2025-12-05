@@ -11,14 +11,12 @@ BLACK = color565(0, 0, 0)
 GREEN = color565(0, 255, 0)
 WHITE = color565(255, 255, 255)
 
-
 class OuterDisplay:
     def __init__(
         self,
         max_speed=200,
         max_rpm=8000,
         idle_rpm=800,
-        segments=12,
     ):
         # сам создаёт дисплей
         self.display = display_ili9341_config()   # 240x320, rotation=0
@@ -33,20 +31,20 @@ class OuterDisplay:
         self.max_rpm = max_rpm
         self.idle_rpm = idle_rpm
 
-        # сегменты и геометрия
-        self.SEGMENTS = segments
+        # геометрия
         self.radius_outer = 70
-        self.radius_inner = 50
+        self.radius_inner = 50  # можно использовать для толщины стрелки, пока не нужен
 
+        # центры двух приборов
         self.cx_speed = 120
         self.cy_speed = 80
 
         self.cx_rpm = 120
         self.cy_rpm = 240
 
-        # прошлые уровни, чтобы знать, что тушить/зажигать
-        self.prev_speed_level = 0
-        self.prev_rpm_level = 0
+        # предыдущие значения (для стирания стрелки)
+        self.prev_speed_value = None
+        self.prev_rpm_value = None
 
         # первый фон
         self.draw_background()
@@ -69,43 +67,78 @@ class OuterDisplay:
         for yy in range(y, y + h):
             self.display.draw_hline(x, yy, w, color)
 
-    def draw_segment(self, cx, cy, index, color):
-        """
-        Один сегмент дуги слева.
-        index: 0 (нижний) .. SEGMENTS-1 (верхний).
-        """
-        start_angle = 225   # низ-слева
-        end_angle = 135     # верх-слева
-        total_span = start_angle - end_angle  # 90°
-
-        if self.SEGMENTS > 1:
-            step = total_span / (self.SEGMENTS - 1)
-        else:
-            step = 0
-
-        angle_center = start_angle - index * step
-        half_width = 4  # «толщина» сегмента по углу
-
-        for ang in range(int(angle_center - half_width),
-                         int(angle_center + half_width) + 1):
-            rad = math.radians(ang)
-            x1 = int(cx + self.radius_inner * math.cos(rad))
-            y1 = int(cy + self.radius_inner * math.sin(rad))
-            x2 = int(cx + self.radius_outer * math.cos(rad))
-            y2 = int(cy + self.radius_outer * math.sin(rad))
-            self.display.draw_line(x1, y1, x2, y2, color)
-
     def draw_one_background(self, cx, cy, label):
         # рамка
         self.draw_circle_outline(cx, cy, self.radius_outer + 8, GREEN)
-        # подпись (RPM / KMH) под центром
+
+        # подпись (RPM / KMH) СНИЗУ круга, по центру
         tw = len(label) * 8
-        self.display.draw_text8x8(cx - tw // 2,
-                                  cy + 30,
-                                  label,
-                                  GREEN,
-                                  BLACK,
-                                  rotate=90)
+        text_x = cx - tw // 2
+
+        # нижняя точка круга
+        text_y = cy + self.radius_outer + 12   # 12 пикселей ниже края круга
+
+        self.display.draw_text8x8(
+            text_x,
+            text_y,
+            label,
+            GREEN,
+            BLACK,
+            rotate=90
+        )
+
+        # риски по окружности
+        self.draw_ticks(cx, cy)
+
+    def draw_ticks(self, cx, cy,
+               num_major=13,   # крупные риски (0..12)
+               num_minor=4,    # мелкие между крупными
+               color=GREEN):
+        """
+        Рисуем риски по дуге 270° от 225° (снизу-слева) до 225+270 (снизу-справа).
+        """
+        start_angle = 225
+        total_span = 270
+
+        # --- крупные риски ---
+        if num_major < 2:
+            return
+
+        step_major = total_span / (num_major - 1)
+
+        for i in range(num_major):
+            angle_deg = start_angle + i * step_major
+            rad = math.radians(angle_deg)
+
+            # крупные — длиннее
+            inner_r = self.radius_outer - 16
+            outer_r = self.radius_outer - 2
+
+            x1 = int(cx + inner_r * math.cos(rad))
+            y1 = int(cy + inner_r * math.sin(rad))
+            x2 = int(cx + outer_r * math.cos(rad))
+            y2 = int(cy + outer_r * math.sin(rad))
+
+            self.display.draw_line(x1, y1, x2, y2, color)
+
+            # --- мелкие риски между крупными ---
+            if num_minor > 0 and i < num_major - 1:
+                step_minor = step_major / (num_minor + 1)
+                for j in range(1, num_minor + 1):
+                    a_deg = angle_deg + j * step_minor
+                    a_rad = math.radians(a_deg)
+
+                    inner_m = self.radius_outer - 10
+                    outer_m = self.radius_outer - 4
+
+                    mx1 = int(cx + inner_m * math.cos(a_rad))
+                    my1 = int(cy + inner_m * math.sin(a_rad))
+                    mx2 = int(cx + outer_m * math.cos(a_rad))
+                    my2 = int(cy + outer_m * math.sin(a_rad))
+
+                    self.display.draw_line(mx1, my1, mx2, my2, color)
+
+
 
     def draw_background(self):
         self.display.clear(BLACK)
@@ -136,6 +169,58 @@ class OuterDisplay:
         rpm = self.idle_rpm + ratio * (self.max_rpm - self.idle_rpm)
         return int(rpm)
 
+    # ---------- стрелки ----------
+
+    def _value_to_angle_deg(self, value, max_value):
+        """
+        Преобразуем значение (0..max_value) в угол стрелки,
+        но направление инвертировано.
+        """
+        if max_value <= 0:
+            return 225
+
+        ratio = value / max_value
+        ratio = max(0, min(1, ratio))
+
+        start_angle = 225       # начальная точка
+        total_span = 270        # полный ход
+
+        # --- инвертированное направление ---
+        angle = start_angle + ratio * total_span
+
+        return angle
+
+
+    def _draw_needle(self, cx, cy, value, max_value, color, prev_value_attr_name):
+
+        prev_value = getattr(self, prev_value_attr_name)
+
+        # если нет изменения — не перерисовываем
+        if prev_value is not None and prev_value == value:
+            return
+
+        # длина стрелки (80% круга)
+        needle_len = int(self.radius_outer * 0.8)
+
+        # стереть старую
+        if prev_value is not None:
+            prev_angle_deg = self._value_to_angle_deg(prev_value, max_value)
+            prev_rad = math.radians(prev_angle_deg)
+            px = int(cx + needle_len * math.cos(prev_rad))
+            py = int(cy + needle_len * math.sin(prev_rad))
+            self.display.draw_line(cx, cy, px, py, BLACK)
+
+        # нарисовать новую
+        angle_deg = self._value_to_angle_deg(value, max_value)
+        rad = math.radians(angle_deg)
+        x = int(cx + needle_len * math.cos(rad))
+        y = int(cy + needle_len * math.sin(rad))
+        self.display.draw_line(cx, cy, x, y, color)
+
+        setattr(self, prev_value_attr_name, value)
+
+
+
     # ---------- публичный метод: обновить по скорости ----------
 
     def update(self, speed_kmh, force=False):
@@ -143,55 +228,37 @@ class OuterDisplay:
         Обновить оба прибора исходя из скорости.
         ESP32 просто зовёт .update(speed_kmh).
         """
-        # --- SPEED ---
-        speed_level = int(speed_kmh * self.SEGMENTS / self.max_speed)
-        if speed_level < 0:
-            speed_level = 0
-        if speed_level > self.SEGMENTS:
-            speed_level = self.SEGMENTS
+        # ограничения
+        if speed_kmh < 0:
+            speed_kmh = 0
+        if speed_kmh > self.max_speed:
+            speed_kmh = self.max_speed
 
-        if force:
-            # гасим все и зажигаем нужные
-            for i in range(self.SEGMENTS):
-                self.draw_segment(self.cx_speed, self.cy_speed, i, BLACK)
-            for i in range(speed_level):
-                self.draw_segment(self.cx_speed, self.cy_speed, i, GREEN)
-        else:
-            if speed_level > self.prev_speed_level:
-                for i in range(self.prev_speed_level, speed_level):
-                    self.draw_segment(self.cx_speed, self.cy_speed, i, GREEN)
-            elif speed_level < self.prev_speed_level:
-                for i in range(speed_level, self.prev_speed_level):
-                    self.draw_segment(self.cx_speed, self.cy_speed, i, BLACK)
-        self.prev_speed_level = speed_level
+        # --- SPEED: стрелка + число ---
+        self._draw_needle(self.cx_speed,
+                          self.cy_speed,
+                          speed_kmh,
+                          self.max_speed,
+                          GREEN,              # цвет стрелки скорости
+                          "prev_speed_value")
 
-        # число скорости
         speed_str = "{:3d}".format(int(speed_kmh))
         self.draw_number_center(self.cx_speed, self.cy_speed, speed_str)
 
-        # --- RPM (из скорости) ---
+        # --- RPM: считаем из скорости, рисуем стрелку другим цветом ---
         rpm = self.compute_rpm(speed_kmh)
-        rpm_level = int(rpm * self.SEGMENTS / self.max_rpm)
-        if rpm_level < 0:
-            rpm_level = 0
-        if rpm_level > self.SEGMENTS:
-            rpm_level = self.SEGMENTS
+        if rpm < 0:
+            rpm = 0
+        if rpm > self.max_rpm:
+            rpm = self.max_rpm
 
-        if force:
-            for i in range(self.SEGMENTS):
-                self.draw_segment(self.cx_rpm, self.cy_rpm, i, BLACK)
-            for i in range(rpm_level):
-                self.draw_segment(self.cx_rpm, self.cy_rpm, i, GREEN)
-        else:
-            if rpm_level > self.prev_rpm_level:
-                for i in range(self.prev_rpm_level, rpm_level):
-                    self.draw_segment(self.cx_rpm, self.cy_rpm, i, GREEN)
-            elif rpm_level < self.prev_rpm_level:
-                for i in range(rpm_level, self.prev_rpm_level):
-                    self.draw_segment(self.cx_rpm, self.cy_rpm, i, BLACK)
-        self.prev_rpm_level = rpm_level
+        self._draw_needle(self.cx_rpm,
+                          self.cy_rpm,
+                          rpm,
+                          self.max_rpm,
+                          WHITE,             # цвет стрелки оборотов
+                          "prev_rpm_value")
 
-        # число оборотов
         rpm_str = "{:4d}".format(rpm)
         self.draw_number_center(self.cx_rpm, self.cy_rpm, rpm_str)
 
