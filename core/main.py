@@ -11,6 +11,13 @@ BLACK = color565(0, 0, 0)
 GREEN = color565(0, 255, 0)
 WHITE = color565(255, 255, 255)
 
+GREEN_TICK = color565(0, 255, 0)
+PURPLE_TICK = color565(139, 0, 255)
+
+SPEED_COLOR = color565(199, 0, 56)
+
+
+
 class OuterDisplay:
     def __init__(
         self,
@@ -68,39 +75,38 @@ class OuterDisplay:
             self.display.draw_hline(x, yy, w, color)
 
     def draw_one_background(self, cx, cy, label):
-        # рамка
-        self.draw_circle_outline(cx, cy, self.radius_outer + 8, GREEN)
+        # рамка круга
+        self.draw_circle_outline(cx, cy, self.radius_outer + 8, SPEED_COLOR)
 
-        # подпись (RPM / KMH) СНИЗУ круга, по центру
+        # подпись
         tw = len(label) * 8
-        text_x = cx - tw // 2
+        angle_text = math.radians(180)
 
-        # нижняя точка круга
-        text_y = cy + self.radius_outer + 12   # 12 пикселей ниже края круга
+        text_radius = self.radius_outer + 12
+        text_x = int(cx + text_radius * math.cos(angle_text)) - tw // 2
+        text_y = int(cy + text_radius * math.sin(angle_text)) - 4
 
         self.display.draw_text8x8(
             text_x,
             text_y,
             label,
-            GREEN,
+            SPEED_COLOR,
             BLACK,
             rotate=90
         )
 
-        # риски по окружности
+        # риски (оставляем прежними)
         self.draw_ticks(cx, cy)
 
+
+
     def draw_ticks(self, cx, cy,
-               num_major=13,   # крупные риски (0..12)
-               num_minor=4,    # мелкие между крупными
-               color=GREEN):
-        """
-        Рисуем риски по дуге 270° от 225° (снизу-слева) до 225+270 (снизу-справа).
-        """
+                num_major=13,   # количество больших рисок
+                num_minor=4):   # мелких между ними
+
         start_angle = 225
         total_span = 270
 
-        # --- крупные риски ---
         if num_major < 2:
             return
 
@@ -110,8 +116,8 @@ class OuterDisplay:
             angle_deg = start_angle + i * step_major
             rad = math.radians(angle_deg)
 
-            # крупные — длиннее
-            inner_r = self.radius_outer - 16
+            # --- большие риски ---
+            inner_r = self.radius_outer - 18
             outer_r = self.radius_outer - 2
 
             x1 = int(cx + inner_r * math.cos(rad))
@@ -119,24 +125,25 @@ class OuterDisplay:
             x2 = int(cx + outer_r * math.cos(rad))
             y2 = int(cy + outer_r * math.sin(rad))
 
-            self.display.draw_line(x1, y1, x2, y2, color)
+            self.display.draw_line(x1, y1, x2, y2, PURPLE_TICK)
 
-            # --- мелкие риски между крупными ---
-            if num_minor > 0 and i < num_major - 1:
+            # --- мелкие риски между большими ---
+            if i < num_major - 1 and num_minor > 0:
                 step_minor = step_major / (num_minor + 1)
-                for j in range(1, num_minor + 1):
-                    a_deg = angle_deg + j * step_minor
-                    a_rad = math.radians(a_deg)
 
-                    inner_m = self.radius_outer - 10
+                for j in range(1, num_minor + 1):
+                    a = angle_deg + j * step_minor
+                    arad = math.radians(a)
+
+                    inner_m = self.radius_outer - 12
                     outer_m = self.radius_outer - 4
 
-                    mx1 = int(cx + inner_m * math.cos(a_rad))
-                    my1 = int(cy + inner_m * math.sin(a_rad))
-                    mx2 = int(cx + outer_m * math.cos(a_rad))
-                    my2 = int(cy + outer_m * math.sin(a_rad))
+                    mx1 = int(cx + inner_m * math.cos(arad))
+                    my1 = int(cy + inner_m * math.sin(arad))
+                    mx2 = int(cx + outer_m * math.cos(arad))
+                    my2 = int(cy + outer_m * math.sin(arad))
 
-                    self.display.draw_line(mx1, my1, mx2, my2, color)
+                    self.display.draw_line(mx1, my1, mx2, my2, GREEN_TICK)
 
 
 
@@ -239,7 +246,7 @@ class OuterDisplay:
                           self.cy_speed,
                           speed_kmh,
                           self.max_speed,
-                          GREEN,              # цвет стрелки скорости
+                          SPEED_COLOR,              # цвет стрелки скорости
                           "prev_speed_value")
 
         speed_str = "{:3d}".format(int(speed_kmh))
