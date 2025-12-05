@@ -17,7 +17,6 @@ PURPLE_TICK = color565(139, 0, 255)
 SPEED_COLOR = color565(199, 0, 56)
 
 
-
 class OuterDisplay:
     def __init__(
         self,
@@ -49,6 +48,22 @@ class OuterDisplay:
         self.prev_speed_value = None
         self.prev_rpm_value = None
 
+        # состояния поворотников (для отрисовки на экране)
+        self.prev_left_on = None
+        self.prev_right_on = None
+
+        # геометрия индикаторов поворотников — размещение стрелок
+        self.turn_led_radius = 6
+
+        # левая стрелка — справа сверху
+        self.turn_left_x  = 200
+        self.turn_left_y  = 20
+
+        # правая стрелка — справа снизу
+        self.turn_right_x = 200
+        self.turn_right_y = 300
+
+
         # первый фон
         self.draw_background()
 
@@ -71,10 +86,10 @@ class OuterDisplay:
             self.display.draw_hline(x, yy, w, color)
 
     def draw_one_background(self, cx, cy, label):
-        # рамка круга
+        # рамка круга — сейчас тем же цветом, что и стрелка скорости
         self.draw_circle_outline(cx, cy, self.radius_outer + 8, SPEED_COLOR)
 
-        # подпись
+        # подпись снизу, в свободных 90°
         tw = len(label) * 8
         angle_text = math.radians(180)
 
@@ -91,14 +106,12 @@ class OuterDisplay:
             rotate=90
         )
 
-        # риски (оставляем прежними)
+        # риски
         self.draw_ticks(cx, cy)
 
-
-
     def draw_ticks(self, cx, cy,
-                num_major=13,   # количество больших рисок
-                num_minor=4):   # мелких между ними
+                   num_major=13,   # количество больших рисок
+                   num_minor=4):   # мелких между ними
 
         start_angle = 225
         total_span = 270
@@ -141,14 +154,15 @@ class OuterDisplay:
 
                     self.display.draw_line(mx1, my1, mx2, my2, GREEN_TICK)
 
-
-
     def draw_background(self):
         self.display.clear(BLACK)
         # верхний прибор — скорость
         self.draw_one_background(self.cx_speed, self.cy_speed, "KM/H")
         # нижний прибор — обороты
         self.draw_one_background(self.cx_rpm, self.cy_rpm, "RPM")
+
+        # индикаторы поворотников (выключены)
+        self.draw_turn_signals(False, False)
 
     def draw_number_center(self, cx, cy, text):
         """Стираем прямоугольник в центре и пишем число."""
@@ -159,16 +173,61 @@ class OuterDisplay:
         self.fill_rect_fast(x0 - 2, y0 - 2, w + 4, h + 4, BLACK)
         self.display.draw_text8x8(x0, y0, text, GREEN, BLACK, rotate=90)
 
+    # ---------- поворотники на экране ----------
+
+    def _draw_turn_arrow(self, x, y, on, is_left, prev_attr_name):
+        """Рисует индикатор поворотника в виде стрелки."""
+        prev = getattr(self, prev_attr_name)
+
+        # если состояние не изменилось — не перерисовываем
+        if prev is not None and prev == on:
+            return
+
+        # размеры стрелки
+        w = 10   # длина
+        h = 6    # полувысота
+
+        # очищаем область вокруг стрелки
+        self.fill_rect_fast(x - w - 3, y - h - 3, 2 * (w + 3), 2 * (h + 3), BLACK)
+
+        # цвет включён/выключен
+        color_on = GREEN_TICK
+        color_off = color565(40, 40, 40)
+        col = color_on if on else color_off
+
+        # координаты треугольника
+        if is_left:
+            p1 = (x,     y - h)   # острие ВВЕРХ
+            p2 = (x - w, y + h)   # левый нижний
+            p3 = (x + w, y + h)   # правый нижний
+        else:
+            # такая же, просто другая запись — обе вниз
+            p1 = (x,     y + h)
+            p2 = (x - w, y - h)
+            p3 = (x + w, y - h)
+
+
+        # рисуем контур треугольника (3 линии)
+        self.display.draw_line(p1[0], p1[1], p2[0], p2[1], col)
+        self.display.draw_line(p2[0], p2[1], p3[0], p3[1], col)
+        self.display.draw_line(p3[0], p3[1], p1[0], p1[1], col)
+
+        setattr(self, prev_attr_name, on)
+
+
+    def draw_turn_signals(self, left_on, right_on):
+        self._draw_turn_arrow(self.turn_left_x,  self.turn_left_y,  left_on,  True,  "prev_left_on")
+        self._draw_turn_arrow(self.turn_right_x, self.turn_right_y, right_on, False, "prev_right_on")
+
+
+
     # ---------- математика приборов ----------
 
     def compute_rpm(self, speed_kmh):
         if speed_kmh <= 0:
             return 0
         ratio = speed_kmh / self.max_speed
-        if ratio < 0:
-            ratio = 0
-        if ratio > 1:
-            ratio = 1
+        ratio = max(0, min(1, ratio))
         rpm = self.idle_rpm + ratio * (self.max_rpm - self.idle_rpm)
         return int(rpm)
 
@@ -177,7 +236,7 @@ class OuterDisplay:
     def _value_to_angle_deg(self, value, max_value):
         """
         Преобразуем значение (0..max_value) в угол стрелки,
-        но направление инвертировано.
+        направление инвертировано (двигается в противоположную сторону).
         """
         if max_value <= 0:
             return 225
@@ -188,14 +247,12 @@ class OuterDisplay:
         start_angle = 225       # начальная точка
         total_span = 270        # полный ход
 
-        # --- инвертированное направление ---
+        # инвертированное направление
         angle = start_angle + ratio * total_span
 
         return angle
 
-
     def _draw_needle(self, cx, cy, value, max_value, color, prev_value_attr_name):
-
         prev_value = getattr(self, prev_value_attr_name)
 
         # если нет изменения — не перерисовываем
@@ -221,8 +278,6 @@ class OuterDisplay:
         self.display.draw_line(cx, cy, x, y, color)
 
         setattr(self, prev_value_attr_name, value)
-
-
 
     # ---------- публичный метод: обновить по скорости ----------
 
@@ -250,10 +305,7 @@ class OuterDisplay:
 
         # --- RPM: считаем из скорости, рисуем стрелку другим цветом ---
         rpm = self.compute_rpm(speed_kmh)
-        if rpm < 0:
-            rpm = 0
-        if rpm > self.max_rpm:
-            rpm = self.max_rpm
+        rpm = max(0, min(self.max_rpm, rpm))
 
         self._draw_needle(self.cx_rpm,
                           self.cy_rpm,
@@ -359,7 +411,6 @@ class ESP32:
 
         # --- управление светодиодами поворотников ---
         if left_pressed:
-            # левый должен мигать
             if self.blink_state:
                 self.led_left.on()
             else:
@@ -368,13 +419,18 @@ class ESP32:
             self.led_left.off()
 
         if right_pressed:
-            # правый должен мигать
             if self.blink_state:
                 self.led_right.on()
             else:
                 self.led_right.off()
         else:
             self.led_right.off()
+
+        # --- вывод состояния поворотников на внешний дисплей ---
+        self.outer.draw_turn_signals(
+            left_on=(left_pressed and self.blink_state),
+            right_on=(right_pressed and self.blink_state)
+        )
 
         # --- обновление приборов ---
         if changed:
