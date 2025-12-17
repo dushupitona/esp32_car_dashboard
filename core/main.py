@@ -360,6 +360,15 @@ class ESP32:
         # кнопка "заправки"
         self.btn_gas = Pin(32, Pin.IN, Pin.PULL_UP)
 
+        # --- пищалка (buzzer) ---
+        self.buzzer = Pin(17, Pin.OUT)
+        self.buzzer.off()
+
+        self.BUZZER_INTERVAL_MS = 400   # период бипа
+        self.last_buzzer_ms = time.ticks_ms()
+        self.buzzer_state = False
+
+
         # --- поворотники: светодиоды ---
         self.led_right = Pin(25, Pin.OUT)
         self.led_left = Pin(26, Pin.OUT)
@@ -608,6 +617,21 @@ class ESP32:
         else:
             # чтобы не накапливался dt, когда стоим/заправляемся
             self.last_fuel_ms = now
+
+    
+        # =========================
+        # 4.5) Пищалка при пустом баке
+        # =========================
+        if self.curr_fuel <= 0:
+            if time.ticks_diff(now, self.last_buzzer_ms) >= self.BUZZER_INTERVAL_MS:
+                self.last_buzzer_ms = now
+                self.buzzer_state = not self.buzzer_state
+                self.buzzer.value(1 if self.buzzer_state else 0)
+        else:
+            # топливо появилось — пищалку выключаем
+            self.buzzer_state = False
+            self.buzzer.off()
+
 
         # =========================
         # 5) Поворотники
