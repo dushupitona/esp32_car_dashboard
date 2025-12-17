@@ -338,6 +338,12 @@ class ESP32:
         self.REFUEL_RATE_PER_SEC = 10          # +10% в секунду
         self.last_refuel_ms = time.ticks_ms()  # таймер для дозаправки
 
+        # --- расход топлива от RPM ---
+        self.FUEL_BASE_PER_SEC = 0.02   # %/сек на холостых (подбери)
+        self.FUEL_MAX_PER_SEC  = 0.30   # %/сек на max_rpm (подбери)
+        self.last_fuel_ms = time.ticks_ms()
+        self.NO_FUEL_DECAY_STEP = 3   # км/ч за тик затухания (подбери)
+
 
         self.curr_rpm = self.compute_rpm(self.curr_speed)
         self.outer.update(self.curr_speed, self.curr_rpm, self.max_speed, self.max_rpm)
@@ -393,37 +399,30 @@ class ESP32:
         changed = False
         now = time.ticks_ms()
 
-        # --- газ: кнопка увеличивает скорость ---
-        if self._btn_turn_pressed:
+        # --- кнопки поворотников (активный уровень: 0 = нажата) ---
+        left_pressed = (self.btn_left.value() == 0)
+        right_pressed = (self.btn_right.value() == 0)
+
+        # --- кнопка заправки ---
+        gas_pressed = (self.btn_gas.value() == 0)
+
+        # =========================
+        # 1) Взаимоисключение: заправка VS движение
+        # =========================
+        if gas_pressed:
+            # пока заправляемся — газ (разгон) игнорируем
             self._btn_turn_pressed = False
-            if self.curr_speed < self.max_speed:
-                self.curr_speed += 5
-                if self.curr_speed > self.max_speed:
-                    self.curr_speed = self.max_speed
 
-                changed = True
-
-        # --- затухание скорости ---
-        if time.ticks_diff(now, self.last_decay_ms) >= self.DECAY_INTERVAL_MS:
-            self.last_decay_ms = now
+            # и не "едем": плавно тормозим к 0
             if self.curr_speed > 0:
-                self.curr_speed -= self.DECAY_STEP_KMH
+                self.curr_speed -= 2
                 if self.curr_speed < 0:
                     self.curr_speed = 0
                 changed = True
 
-        # --- чтение кнопок поворотников (активный уровень: 0 = нажата) ---
-        left_pressed = (self.btn_left.value() == 0)
-        right_pressed = (self.btn_right.value() == 0)
-
-        gas_pressed = (self.btn_gas.value() == 0)
-
-                # --- заправка: +10%/сек пока зажата кнопка ---
-        if gas_pressed:
+            # --- заправка: +10%/сек ---
             dt_ms = time.ticks_diff(now, self.last_refuel_ms)
-
             if dt_ms >= 1000:
-                # сколько "секунд" прошло (на случай лагов)
                 steps = dt_ms // 1000
                 self.last_refuel_ms = time.ticks_add(self.last_refuel_ms, steps * 1000)
 
@@ -431,47 +430,106 @@ class ESP32:
                 if self.curr_fuel > 100:
                     self.curr_fuel = 100
 
-                print("Fuel:", self.curr_fuel, "%")
+                changed = True  # чтобы обновить rpm/дисплей при желании
         else:
             # чтобы при следующем нажатии не накопилось лишнее время
             self.last_refuel_ms = now
 
+            # =========================
+            # 2) Газ: кнопка увеличивает скорость (ТОЛЬКО если есть топливо)
+            # =========================
+            if self._btn_turn_pressed:
+                self._btn_turn_pressed = False
 
-        # если хотя бы один поворотник активен — обновляем фазу мигания
+                if self.curr_fuel > 0:
+                    if self.curr_speed < self.max_speed:
+                        self.curr_speed += 5
+                        if self.curr_speed > self.max_speed:
+                            self.curr_speed = self.max_speed
+                        changed = True
+                # если топлива нет — игнор (не разгоняем)
+
+        # =========================
+        # 3) Затухание скорости (если нет топлива — падает быстрее)
+        # =========================
+        if time.ticks_diff(now, self.last_decay_ms) >= self.DECAY_INTERVAL_MS:
+            self.last_decay_ms = now
+
+            if self.curr_speed > 0:
+                step = self.NO_FUEL_DECAY_STEP if (self.curr_fuel <= 0) else self.DECAY_STEP_KMH
+                self.curr_speed -= step
+                if self.curr_speed < 0:
+                    self.curr_speed = 0
+                changed = True
+
+        # =========================
+        # 4) Расход топлива от RPM (если не заправляемся и едем)
+        # =========================
+        if (not gas_pressed) and self.curr_speed > 0 and self.curr_fuel > 0:
+            # rpm по текущей скорости
+            self.curr_rpm = self.compute_rpm(self.curr_speed)
+
+            rpm_ratio = self.curr_rpm / self.max_rpm
+            if rpm_ratio < 0:
+                rpm_ratio = 0
+            elif rpm_ratio > 1:
+                rpm_ratio = 1
+
+            burn_per_sec = self.FUEL_BASE_PER_SEC + rpm_ratio * (self.FUEL_MAX_PER_SEC - self.FUEL_BASE_PER_SEC)
+
+            dt_ms = time.ticks_diff(now, self.last_fuel_ms)
+            if dt_ms > 0:
+                self.last_fuel_ms = now
+
+                self.curr_fuel -= burn_per_sec * (dt_ms / 1000.0)
+                if self.curr_fuel < 0:
+                    self.curr_fuel = 0
+
+                # если топливо закончилось — машина больше не едет
+                if self.curr_fuel == 0 and self.curr_speed > 0:
+                    self.curr_speed = 0
+                    changed = True
+
+                changed = True
+        else:
+            # чтобы не накапливался dt, когда стоим/заправляемся
+            self.last_fuel_ms = now
+
+        # =========================
+        # 5) Поворотники (без изменений)
+        # =========================
         if left_pressed or right_pressed:
             if time.ticks_diff(now, self.last_blink_ms) >= self.BLINK_INTERVAL_MS:
                 self.last_blink_ms = now
                 self.blink_state = not self.blink_state
         else:
-            # если кнопки отпущены — поворотники гасим и сбрасываем фазу
             self.blink_state = False
 
-        # --- управление светодиодами поворотников ---
         if left_pressed:
-            if self.blink_state:
-                self.led_left.on()
-            else:
-                self.led_left.off()
+            self.led_left.on() if self.blink_state else self.led_left.off()
         else:
             self.led_left.off()
 
         if right_pressed:
-            if self.blink_state:
-                self.led_right.on()
-            else:
-                self.led_right.off()
+            self.led_right.on() if self.blink_state else self.led_right.off()
         else:
             self.led_right.off()
 
-        # --- вывод состояния поворотников на внешний дисплей ---
         self.outer.draw_turn_signals(
             left_on=(left_pressed and self.blink_state),
             right_on=(right_pressed and self.blink_state)
         )
 
-        # --- обновление приборов ---
+        # =========================
+        # 6) Обновление приборов
+        # =========================
         if changed:
-            self.curr_rpm = self.compute_rpm(self.curr_speed)
+            # если топлива нет — rpm = 0 (чтобы стрелка не "висела")
+            if self.curr_fuel <= 0:
+                self.curr_rpm = 0
+            else:
+                self.curr_rpm = self.compute_rpm(self.curr_speed)
+
             self.outer.update(self.curr_speed, self.curr_rpm, self.max_speed, self.max_rpm)
 
 
