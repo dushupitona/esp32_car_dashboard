@@ -21,20 +21,10 @@ SPEED_COLOR = color565(199, 0, 56)
 
 
 class OuterDisplay:
-    def __init__(
-        self,
-        max_speed=200,
-        max_rpm=8000,
-        idle_rpm=800,
-    ):
+    def __init__(self):
         # сам создаёт дисплей
         self.display = display_ili9341_config()   # 240x320, rotation=0
         self.display.clear(BLACK)
-
-        # параметры "физики"
-        self.max_speed = max_speed
-        self.max_rpm = max_rpm
-        self.idle_rpm = idle_rpm
 
         # геометрия
         self.radius_outer = 70
@@ -223,17 +213,6 @@ class OuterDisplay:
         self._draw_turn_arrow(self.turn_right_x, self.turn_right_y, right_on, False, "prev_right_on")
 
 
-
-    # ---------- математика приборов ----------
-
-    def compute_rpm(self, speed_kmh):
-        if speed_kmh <= 0:
-            return 0
-        ratio = speed_kmh / self.max_speed
-        ratio = max(0, min(1, ratio))
-        rpm = self.idle_rpm + ratio * (self.max_rpm - self.idle_rpm)
-        return int(rpm)
-
     # ---------- стрелки ----------
 
     def _value_to_angle_deg(self, value, max_value):
@@ -284,41 +263,23 @@ class OuterDisplay:
 
     # ---------- публичный метод: обновить по скорости ----------
 
-    def update(self, speed_kmh, force=False):
-        """
-        Обновить оба прибора исходя из скорости.
-        ESP32 просто зовёт .update(speed_kmh).
-        """
-        # ограничения
-        if speed_kmh < 0:
-            speed_kmh = 0
-        if speed_kmh > self.max_speed:
-            speed_kmh = self.max_speed
+    def update(self, speed, rpm, max_speed, max_rpm):
+        # ограничения (можно и тут, но лучше в ESP32)
+        if speed < 0: speed = 0
+        if rpm < 0: rpm = 0
+        if speed > max_speed: speed = max_speed
+        if rpm > max_rpm: rpm = max_rpm
 
-        # --- SPEED: стрелка + число ---
-        self._draw_needle(self.cx_speed,
-                          self.cy_speed,
-                          speed_kmh,
-                          self.max_speed,
-                          SPEED_COLOR,              # цвет стрелки скорости
-                          "prev_speed_value")
+        # SPEED
+        self._draw_needle(self.cx_speed, self.cy_speed, speed, max_speed,
+                          SPEED_COLOR, "prev_speed_value")
+        self.draw_number_center(self.cx_speed, self.cy_speed, "{:3d}".format(int(speed)))
 
-        speed_str = "{:3d}".format(int(speed_kmh))
-        self.draw_number_center(self.cx_speed, self.cy_speed, speed_str)
+        # RPM
+        self._draw_needle(self.cx_rpm, self.cy_rpm, rpm, max_rpm,
+                          WHITE, "prev_rpm_value")
+        self.draw_number_center(self.cx_rpm, self.cy_rpm, "{:4d}".format(int(rpm)))
 
-        # --- RPM: считаем из скорости, рисуем стрелку другим цветом ---
-        rpm = self.compute_rpm(speed_kmh)
-        rpm = max(0, min(self.max_rpm, rpm))
-
-        self._draw_needle(self.cx_rpm,
-                          self.cy_rpm,
-                          rpm,
-                          self.max_rpm,
-                          WHITE,             # цвет стрелки оборотов
-                          "prev_rpm_value")
-
-        rpm_str = "{:4d}".format(rpm)
-        self.draw_number_center(self.cx_rpm, self.cy_rpm, rpm_str)
 
 def draw_icon_48x48(display, icon_u16, x, y, w=48, h=48):
     """
@@ -332,10 +293,10 @@ def draw_icon_48x48(display, icon_u16, x, y, w=48, h=48):
         i += 2
 
     display.blit_buffer(buf, x, y, w, h)
-    
+
 
 class ESP32:
-    def __init__(self, outer_display):
+    def __init__(self, outer_display, max_speed, max_rpm, idle_rpm):
         # ---------- встроенный ST7789: только подсветка ----------
         self.display1 = display_lilygo_config()
         self.display1.init()
@@ -363,12 +324,19 @@ class ESP32:
 
         draw_icon_48x48(self.display1, gas, x, y)
 
-
         # внешний дисплей с приборами
         self.outer = outer_display
 
-        # физические значения
-        self.speed_kmh = 0
+        self.curr_speed = 0
+        self.curr_fuel = 0
+
+        self.max_speed = max_speed
+        self.max_rpm = max_rpm
+        self.idle_rpm = idle_rpm
+
+        self.curr_rpm = self.compute_rpm(self.curr_speed)
+        self.outer.update(self.curr_speed, self.curr_rpm, self.max_speed, self.max_rpm)
+        
 
         # затухание скорости
         self.DECAY_INTERVAL_MS = 200
@@ -379,6 +347,9 @@ class ESP32:
         self._btn_turn_pressed = False
         self.btn_turn = Pin(12, Pin.IN, Pin.PULL_UP)
         self.btn_turn.irq(trigger=Pin.IRQ_FALLING, handler=self._btn_turn_irq)
+
+        # кнопка "заправки"
+        self.btn_gas = Pin(32, Pin.IN, Pin.PULL_UP)
 
         # --- поворотники: светодиоды ---
         self.led_right = Pin(25, Pin.OUT)
@@ -397,15 +368,21 @@ class ESP32:
         self.last_blink_ms = time.ticks_ms()
         self.blink_state = False      # False = выключено, True = включено
 
-        # первый раз обновим всё
-        self.outer.update(self.speed_kmh, force=True)
-
     # ================= IRQ =================
 
     def _btn_turn_irq(self, pin):
         self._btn_turn_pressed = True
 
     # ================= Логика: кнопка + затухание + поворотники =================
+
+
+    def compute_rpm(self, curr_speed):
+        if curr_speed <= 0:
+            return 0
+        ratio = curr_speed / self.max_speed
+        ratio = max(0, min(1, ratio))
+        rpm = self.idle_rpm + ratio * (self.max_rpm - self.idle_rpm)
+        return int(rpm)
 
     def process(self):
         changed = False
@@ -414,24 +391,30 @@ class ESP32:
         # --- газ: кнопка увеличивает скорость ---
         if self._btn_turn_pressed:
             self._btn_turn_pressed = False
-            if self.speed_kmh < self.outer.max_speed:
-                self.speed_kmh += 5
-                if self.speed_kmh > self.outer.max_speed:
-                    self.speed_kmh = self.outer.max_speed
+            if self.curr_speed < self.max_speed:
+                self.curr_speed += 5
+                if self.curr_speed > self.max_speed:
+                    self.curr_speed = self.max_speed
+
                 changed = True
 
         # --- затухание скорости ---
         if time.ticks_diff(now, self.last_decay_ms) >= self.DECAY_INTERVAL_MS:
             self.last_decay_ms = now
-            if self.speed_kmh > 0:
-                self.speed_kmh -= self.DECAY_STEP_KMH
-                if self.speed_kmh < 0:
-                    self.speed_kmh = 0
+            if self.curr_speed > 0:
+                self.curr_speed -= self.DECAY_STEP_KMH
+                if self.curr_speed < 0:
+                    self.curr_speed = 0
                 changed = True
 
         # --- чтение кнопок поворотников (активный уровень: 0 = нажата) ---
         left_pressed = (self.btn_left.value() == 0)
         right_pressed = (self.btn_right.value() == 0)
+
+        gas_pressed = (self.btn_gas.value() == 0)
+
+        if gas_pressed:
+            print('Заправка ->')
 
         # если хотя бы один поворотник активен — обновляем фазу мигания
         if left_pressed or right_pressed:
@@ -467,12 +450,20 @@ class ESP32:
 
         # --- обновление приборов ---
         if changed:
-            self.outer.update(self.speed_kmh)
+            self.curr_rpm = self.compute_rpm(self.curr_speed)
+            self.outer.update(self.curr_speed, self.curr_rpm, self.max_speed, self.max_rpm)
+
 
 
 if __name__ == "__main__":
     outer = OuterDisplay()
-    esp = ESP32(outer_display=outer)
+    esp = ESP32(
+        outer_display=outer,
+        max_speed=200,
+        max_rpm=8000,
+        idle_rpm=800,
+    )
+
     while True:
         esp.process()
         time.sleep_ms(10)
