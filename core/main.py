@@ -421,17 +421,20 @@ class ESP32:
 
     def _fuel_ui_init(self, sw, sh):
         # справа от иконки
-        self.fuel_x = self.icon_x + 48 + 10
-        self.fuel_y = self.icon_y + 6
+        self.fuel_x = self.icon_x + 48 + 8
+        # по центру иконки
+        self.fuel_y = self.icon_y + 18
 
-        self.fuel_bar_w = 6
-        self.fuel_bar_h = 12
-        self.fuel_gap = 4
+        # --- ГОРИЗОНТАЛЬНЫЕ палочки ---
+        self.fuel_bar_w = 14   # ширина (СДЕЛАЛИ ШИРЕ)
+        self.fuel_bar_h = 6    # высота
+        self.fuel_gap = 4      # расстояние между палочками
 
-        self.FUEL_ON  = 0x07E0  # зелёный
-        self.FUEL_OFF = 0x2104  # тёмно-серый
-        self.FUEL_BG  = 0x0000  # чёрный
-        self.FUEL_OUT = 0xFFFF  # белая рамка
+        self.FUEL_ON  = 0x07E0   # зелёный
+        self.FUEL_OFF = 0x2104   # тёмно-серый
+        self.FUEL_BG  = 0x0000   # чёрный
+        self.FUEL_OUT = 0xFFFF   # рамка
+
 
     def _fuel_to_bars(self, fuel_percent):
         if fuel_percent <= 0:
@@ -450,25 +453,44 @@ class ESP32:
         # очистить область
         total_w = 3 * self.fuel_bar_w + 2 * self.fuel_gap + 6
         total_h = self.fuel_bar_h + 6
-        self._d1_fill_rect(self.fuel_x - 3, self.fuel_y - 3, total_w, total_h, self.FUEL_BG)
+        self._d1_fill_rect(
+            self.fuel_x - 3,
+            self.fuel_y - 3,
+            total_w,
+            total_h,
+            self.FUEL_BG
+        )
 
         d = self.display1
+
         for i in range(3):
+            # --- ГОРИЗОНТАЛЬНО ---
             x = self.fuel_x + i * (self.fuel_bar_w + self.fuel_gap)
             y = self.fuel_y
 
             # выключенная палочка
-            self._d1_fill_rect(x, y, self.fuel_bar_w, self.fuel_bar_h, self.FUEL_OFF)
+            self._d1_fill_rect(
+                x, y,
+                self.fuel_bar_w,
+                self.fuel_bar_h,
+                self.FUEL_OFF
+            )
 
             # включенная
             if i < bars:
-                self._d1_fill_rect(x, y, self.fuel_bar_w, self.fuel_bar_h, self.FUEL_ON)
+                self._d1_fill_rect(
+                    x, y,
+                    self.fuel_bar_w,
+                    self.fuel_bar_h,
+                    self.FUEL_ON
+                )
 
-            # рамка (если есть)
+            # рамка
             if hasattr(d, "rect"):
                 d.rect(x, y, self.fuel_bar_w, self.fuel_bar_h, self.FUEL_OUT)
 
         self.prev_fuel_bars = bars
+
 
     # =================== IRQ ===================
 
