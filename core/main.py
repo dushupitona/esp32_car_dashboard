@@ -6,6 +6,9 @@ import st7789
 from ili9341 import color565
 from config import display_lilygo_config, display_ili9341_config
 
+
+from icons import gas
+
 # --- цвета для ILI9341 ---
 BLACK = color565(0, 0, 0)
 GREEN = color565(0, 255, 0)
@@ -317,6 +320,19 @@ class OuterDisplay:
         rpm_str = "{:4d}".format(rpm)
         self.draw_number_center(self.cx_rpm, self.cy_rpm, rpm_str)
 
+def draw_icon_48x48(display, icon_u16, x, y, w=48, h=48):
+    """
+    icon_u16: список/array из RGB565 uint16 (len = 48*48)
+    """
+    buf = bytearray(w * h * 2)
+    i = 0
+    for c in icon_u16:
+        buf[i]     = (c >> 8) & 0xFF   # старший байт
+        buf[i + 1] = c & 0xFF          # младший байт
+        i += 2
+
+    display.blit_buffer(buf, x, y, w, h)
+    
 
 class ESP32:
     def __init__(self, outer_display):
@@ -330,6 +346,23 @@ class ESP32:
                 self.display1.backlight.on()
             except:
                 pass
+
+        # ---------- иконка газа ----------
+        # очистить экран
+        try:
+            self.display1.fill(0)   # ST7789
+        except AttributeError:
+            self.display1.clear(0)
+
+        sw = 240
+        sh = 135
+
+
+        x = (sw // 2) - 24
+        y = (sh // 2) - 24
+
+        draw_icon_48x48(self.display1, gas, x, y)
+
 
         # внешний дисплей с приборами
         self.outer = outer_display
