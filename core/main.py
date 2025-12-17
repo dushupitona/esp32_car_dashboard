@@ -2,6 +2,7 @@ from machine import Pin
 import time
 import math
 import st7789
+import gc
 
 from ili9341 import color565
 from config import display_lilygo_config, display_ili9341_config
@@ -298,6 +299,7 @@ def draw_icon_48x48(display, icon_u16, x, y, w=48, h=48):
 class ESP32:
     def __init__(self, outer_display, max_speed, max_rpm, idle_rpm):
         # ---------- встроенный ST7789 ----------
+        gc.collect()
         self.display1 = display_lilygo_config()
         self.display1.init()
         try:
@@ -340,8 +342,8 @@ class ESP32:
         self.last_refuel_ms = time.ticks_ms()
 
         # --- расход топлива от RPM ---
-        self.FUEL_BASE_PER_SEC = 0.02
-        self.FUEL_MAX_PER_SEC  = 0.30
+        self.FUEL_BASE_PER_SEC = 0.04
+        self.FUEL_MAX_PER_SEC  = 0.60
         self.last_fuel_ms = time.ticks_ms()
         self.NO_FUEL_DECAY_STEP = 3
 
@@ -518,36 +520,50 @@ class ESP32:
         # --- кнопка заправки ---
         gas_pressed = (self.btn_gas.value() == 0)
 
-        # 1) Взаимоисключение: заправка VS движение
-        if gas_pressed:
-            # пока заправляемся — газ (разгон) игнорируем
+        # 0) если бак пустой — разгон запрещён (но скорость НЕ обнуляем резко)
+        if self.curr_fuel <= 0:
             self._btn_turn_pressed = False
 
-            # и не "едем": плавно тормозим к 0
+        # =========================
+        # 1) Взаимоисключение: заправка VS движение
+        #    Заправка ТОЛЬКО при speed==0
+        # =========================
+        if gas_pressed:
+            # разгон игнорируем
+            self._btn_turn_pressed = False
+
             if self.curr_speed > 0:
+                # едем -> заправка запрещена, только тормозим к 0
                 self.curr_speed -= 2
                 if self.curr_speed < 0:
                     self.curr_speed = 0
                 changed = True
 
-            # --- заправка: +10%/сек ---
-            dt_ms = time.ticks_diff(now, self.last_refuel_ms)
-            if dt_ms >= 1000:
-                steps = dt_ms // 1000
-                self.last_refuel_ms = time.ticks_add(self.last_refuel_ms, steps * 1000)
+                # не накапливаем время "заправки" пока тормозим
+                self.last_refuel_ms = now
+            else:
+                # стоим -> можно заправляться
+                dt_ms = time.ticks_diff(now, self.last_refuel_ms)
+                if dt_ms >= 1000:
+                    steps = dt_ms // 1000
+                    self.last_refuel_ms = time.ticks_add(self.last_refuel_ms, steps * 1000)
 
-                self.curr_fuel += steps * self.REFUEL_RATE_PER_SEC
-                if self.curr_fuel > 100:
-                    self.curr_fuel = 100
+                    self.curr_fuel += steps * self.REFUEL_RATE_PER_SEC
+                    if self.curr_fuel > 100:
+                        self.curr_fuel = 100
 
-                changed = True
+                    changed = True
         else:
+            # не заправляемся — сбрасываем таймер заправки
             self.last_refuel_ms = now
 
+            # =========================
             # 2) Газ: кнопка увеличивает скорость (ТОЛЬКО если есть топливо)
+            # =========================
             if self._btn_turn_pressed:
                 self._btn_turn_pressed = False
 
+                # если топлива нет — просто игнорируем разгон (без резкого stop)
                 if self.curr_fuel > 0:
                     if self.curr_speed < self.max_speed:
                         self.curr_speed += 5
@@ -555,7 +571,9 @@ class ESP32:
                             self.curr_speed = self.max_speed
                         changed = True
 
-        # 3) Затухание скорости (если нет топлива — падает быстрее)
+        # =========================
+        # 3) Затухание скорости
+        # =========================
         if time.ticks_diff(now, self.last_decay_ms) >= self.DECAY_INTERVAL_MS:
             self.last_decay_ms = now
 
@@ -566,7 +584,9 @@ class ESP32:
                     self.curr_speed = 0
                 changed = True
 
-        # 4) Расход топлива от RPM (если не заправляемся и едем)
+        # =========================
+        # 4) Расход топлива от RPM (только если НЕ заправляемся и едем)
+        # =========================
         if (not gas_pressed) and self.curr_speed > 0 and self.curr_fuel > 0:
             self.curr_rpm = self.compute_rpm(self.curr_speed)
 
@@ -583,15 +603,15 @@ class ESP32:
                 if self.curr_fuel < 0:
                     self.curr_fuel = 0
 
-                if self.curr_fuel == 0 and self.curr_speed > 0:
-                    self.curr_speed = 0
-                    changed = True
-
+                # ВАЖНО: НЕ обнуляем скорость мгновенно — докатываемся через затухание
                 changed = True
         else:
+            # чтобы не накапливался dt, когда стоим/заправляемся
             self.last_fuel_ms = now
 
-        # 5) Поворотники (без изменений)
+        # =========================
+        # 5) Поворотники
+        # =========================
         if left_pressed or right_pressed:
             if time.ticks_diff(now, self.last_blink_ms) >= self.BLINK_INTERVAL_MS:
                 self.last_blink_ms = now
@@ -614,7 +634,9 @@ class ESP32:
             right_on=(right_pressed and self.blink_state)
         )
 
+        # =========================
         # 6) Обновление приборов + палочки топлива
+        # =========================
         if changed:
             if self.curr_fuel <= 0:
                 self.curr_rpm = 0
@@ -623,6 +645,7 @@ class ESP32:
 
             self.outer.update(self.curr_speed, self.curr_rpm, self.max_speed, self.max_rpm)
             self._draw_fuel_bars(self.curr_fuel)
+
 
 
 
