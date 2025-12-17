@@ -334,6 +334,11 @@ class ESP32:
         self.max_rpm = max_rpm
         self.idle_rpm = idle_rpm
 
+        # --- заправка ---
+        self.REFUEL_RATE_PER_SEC = 10          # +10% в секунду
+        self.last_refuel_ms = time.ticks_ms()  # таймер для дозаправки
+
+
         self.curr_rpm = self.compute_rpm(self.curr_speed)
         self.outer.update(self.curr_speed, self.curr_rpm, self.max_speed, self.max_rpm)
         
@@ -413,8 +418,24 @@ class ESP32:
 
         gas_pressed = (self.btn_gas.value() == 0)
 
+                # --- заправка: +10%/сек пока зажата кнопка ---
         if gas_pressed:
-            print('Заправка ->')
+            dt_ms = time.ticks_diff(now, self.last_refuel_ms)
+
+            if dt_ms >= 1000:
+                # сколько "секунд" прошло (на случай лагов)
+                steps = dt_ms // 1000
+                self.last_refuel_ms = time.ticks_add(self.last_refuel_ms, steps * 1000)
+
+                self.curr_fuel += steps * self.REFUEL_RATE_PER_SEC
+                if self.curr_fuel > 100:
+                    self.curr_fuel = 100
+
+                print("Fuel:", self.curr_fuel, "%")
+        else:
+            # чтобы при следующем нажатии не накопилось лишнее время
+            self.last_refuel_ms = now
+
 
         # если хотя бы один поворотник активен — обновляем фазу мигания
         if left_pressed or right_pressed:
