@@ -526,6 +526,14 @@ class ESP32:
         self.last_blink_ms = time.ticks_ms()
         self.blink_state = False
 
+        # --- колебания оборотов на холостом ---
+        self.IDLE_WOBBLE_AMPL = 120        # амплитуда ± (подбери)
+        self.IDLE_WOBBLE_PERIOD_MS = 900   # период "волны"
+        self.IDLE_NOISE_AMPL = 25          # мелкий шум ±
+        self.IDLE_UPDATE_MS = 120          # как часто обновлять приборы на месте
+        self.last_idle_ms = time.ticks_ms()
+
+
 
     # =================== IRQ ===================
 
@@ -539,15 +547,34 @@ class ESP32:
         if curr_fuel <= 0:
             return 0
 
-        # есть топливо, но стоим -> холостой ход
+        # есть топливо, но стоим -> холостой ход (скачки)
         if curr_speed <= 0:
-            return int(self.idle_rpm)
+            now = time.ticks_ms()
+
+            # плавная волна
+            phase = (now % self.IDLE_WOBBLE_PERIOD_MS) / self.IDLE_WOBBLE_PERIOD_MS
+            wobble = math.sin(2 * math.pi * phase) * self.IDLE_WOBBLE_AMPL
+
+            # мелкий "шум" без random (быстро и просто)
+            # диапазон примерно [-IDLE_NOISE_AMPL .. +IDLE_NOISE_AMPL]
+            noise = ((now // 37) % (2 * self.IDLE_NOISE_AMPL + 1)) - self.IDLE_NOISE_AMPL
+
+            rpm = self.idle_rpm + wobble + noise
+
+            # ограничим разумно
+            if rpm < 0:
+                rpm = 0
+            if rpm > self.max_rpm:
+                rpm = self.max_rpm
+
+            return int(rpm)
 
         # едем -> растёт от скорости
         ratio = curr_speed / self.max_speed
         ratio = max(0, min(1, ratio))
         rpm = self.idle_rpm + ratio * (self.max_rpm - self.idle_rpm)
         return int(rpm)
+
 
 
     def process(self):
@@ -655,6 +682,16 @@ class ESP32:
             left_on=(left_pressed and self.blink_state),
             right_on=(right_pressed and self.blink_state)
         )
+
+        # --- холостой ход: обновляем RPM даже без changed ---
+        if (self.curr_speed <= 0) and (self.curr_fuel > 0) and (not gas_pressed):
+            if time.ticks_diff(now, self.last_idle_ms) >= self.IDLE_UPDATE_MS:
+                self.last_idle_ms = now
+                new_rpm = self.compute_rpm(self.curr_speed, self.curr_fuel)
+                if new_rpm != self.curr_rpm:
+                    self.curr_rpm = new_rpm
+                    self.outer_display.update(self.curr_speed, self.curr_rpm, self.max_speed, self.max_rpm)
+
 
         # 6) Обновление приборов + палочки топлива
         if changed:
