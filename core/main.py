@@ -466,21 +466,20 @@ class ESP32:
 
         # ---------- встроенный дисплей в отдельном классе ----------
         self.display = InnerDisplay(display_lilygo_config, bg=0x0000)
-        sw, sh = self.display.sw, self.display.sh
 
         # ---------- состояния ----------
         self.outer_display = outer_display
-
-        self.curr_speed = 0
-        self.curr_fuel = 0
-        self.curr_rpm = 0
-
 
         self.max_speed = max_speed
         self.max_rpm = max_rpm
         self.idle_rpm = idle_rpm
 
+        self.curr_speed = 0
+        self.curr_fuel = 0
+        self.curr_rpm = self.compute_rpm(self.curr_speed, self.curr_fuel)
+
         self.display.draw_fuel_bars(self.curr_fuel)
+        self.outer_display.update(self.curr_speed, self.curr_rpm, self.max_speed, self.max_rpm)
 
         # --- заправка ---
         self.REFUEL_RATE_PER_SEC = 10
@@ -527,9 +526,6 @@ class ESP32:
         self.last_blink_ms = time.ticks_ms()
         self.blink_state = False
 
-        # стартовый вывод приборов
-        self.curr_rpm = self.compute_rpm(self.curr_speed)
-        self.outer_display.update(self.curr_speed, self.curr_rpm, self.max_speed, self.max_rpm)
 
     # =================== IRQ ===================
 
@@ -538,13 +534,21 @@ class ESP32:
 
     # =================== логика ===================
 
-    def compute_rpm(self, curr_speed):
-        if curr_speed <= 0:
+    def compute_rpm(self, curr_speed, curr_fuel):
+        # нет топлива -> двигатель заглох
+        if curr_fuel <= 0:
             return 0
+
+        # есть топливо, но стоим -> холостой ход
+        if curr_speed <= 0:
+            return int(self.idle_rpm)
+
+        # едем -> растёт от скорости
         ratio = curr_speed / self.max_speed
         ratio = max(0, min(1, ratio))
         rpm = self.idle_rpm + ratio * (self.max_rpm - self.idle_rpm)
         return int(rpm)
+
 
     def process(self):
         changed = False
@@ -602,7 +606,7 @@ class ESP32:
 
         # 4) Расход топлива от RPM (только если не заправляемся и едем)
         if (not gas_pressed) and self.curr_speed > 0 and self.curr_fuel > 0:
-            self.curr_rpm = self.compute_rpm(self.curr_speed)
+            self.curr_rpm = self.compute_rpm(self.curr_speed, self.curr_fuel)
 
             rpm_ratio = self.curr_rpm / self.max_rpm
             rpm_ratio = 0 if rpm_ratio < 0 else (1 if rpm_ratio > 1 else rpm_ratio)
@@ -654,13 +658,11 @@ class ESP32:
 
         # 6) Обновление приборов + палочки топлива
         if changed:
-            if self.curr_fuel <= 0:
-                self.curr_rpm = 0
-            else:
-                self.curr_rpm = self.compute_rpm(self.curr_speed)
+            self.curr_rpm = self.compute_rpm(self.curr_speed, self.curr_fuel)
 
             self.outer_display.update(self.curr_speed, self.curr_rpm, self.max_speed, self.max_rpm)
             self.display.draw_fuel_bars(self.curr_fuel)
+
 
 
 if __name__ == "__main__":
