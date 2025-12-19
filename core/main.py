@@ -412,8 +412,8 @@ class ESP32:
         self.last_refuel_ms = time.ticks_ms()
 
         # расход топлива от RPM
-        self.FUEL_BASE_PER_SEC = 0.1
-        self.FUEL_MAX_PER_SEC  = 0.9
+        self.FUEL_BASE_PER_SEC = 0.5
+        self.FUEL_MAX_PER_SEC  = 2
         self.last_fuel_ms = time.ticks_ms()
         self.NO_FUEL_DECAY_STEP = 3
 
