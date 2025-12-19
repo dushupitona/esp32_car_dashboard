@@ -1,6 +1,3 @@
-# повысить расход
-# сделать на холостом ходе обороты = 800, а при отсутствии топлива = 0
-
 from machine import Pin
 import time
 import math
@@ -10,10 +7,8 @@ import gc
 from ili9341 import color565
 from config import display_lilygo_config, display_ili9341_config
 
-
 from icons import gas
 
-# --- цвета для ILI9341 ---
 BLACK = color565(0, 0, 0)
 GREEN = color565(0, 255, 0)
 WHITE = color565(255, 255, 255)
@@ -26,15 +21,11 @@ SPEED_COLOR = color565(199, 0, 56)
 
 class OuterDisplay:
     def __init__(self):
-        # сам создаёт дисплей
-        self.display = display_ili9341_config()   # 240x320, rotation=0
+        self.display = display_ili9341_config()
         self.display.clear(BLACK)
 
-        # геометрия
         self.radius_outer = 70
-        self.radius_inner = 50  # можно использовать для толщины стрелки, пока не нужен
 
-        # центры двух приборов
         self.cx_speed = 120
         self.cy_speed = 80
 
@@ -49,7 +40,7 @@ class OuterDisplay:
         self.prev_left_on = None
         self.prev_right_on = None
 
-        # геометрия индикаторов поворотников — размещение стрелок
+        # геометрия индикаторов поворотников
         self.turn_led_radius = 6
 
         # левая стрелка — справа сверху
@@ -60,17 +51,13 @@ class OuterDisplay:
         self.turn_right_x = 200
         self.turn_right_y = 300
 
-
-        # первый фон
+        # фон
         self.draw_background()
-
-    # ---------- утилиты рисования ----------
 
     def clear(self):
         self.display.clear(BLACK)
 
     def draw_circle_outline(self, cx, cy, r, color):
-        """Простая окружность по точкам."""
         for ang in range(0, 360, 3):
             rad = math.radians(ang)
             x = int(cx + r * math.cos(rad))
@@ -78,15 +65,12 @@ class OuterDisplay:
             self.display.draw_line(x, y, x, y, color)
 
     def fill_rect_fast(self, x, y, w, h, color):
-        """Заполняем прямоугольник горизонтальными линиями."""
         for yy in range(y, y + h):
             self.display.draw_hline(x, yy, w, color)
 
     def draw_one_background(self, cx, cy, label):
-        # рамка круга — сейчас тем же цветом, что и стрелка скорости
         self.draw_circle_outline(cx, cy, self.radius_outer + 8, SPEED_COLOR)
 
-        # подпись снизу, в свободных 90°
         tw = len(label) * 8
         angle_text = math.radians(180)
 
@@ -103,12 +87,9 @@ class OuterDisplay:
             rotate=90
         )
 
-        # риски
         self.draw_ticks(cx, cy)
 
-    def draw_ticks(self, cx, cy,
-                   num_major=13,   # количество больших рисок
-                   num_minor=4):   # мелких между ними
+    def draw_ticks(self, cx, cy, num_major=13, num_minor=4):
 
         start_angle = 225
         total_span = 270
@@ -122,7 +103,6 @@ class OuterDisplay:
             angle_deg = start_angle + i * step_major
             rad = math.radians(angle_deg)
 
-            # --- большие риски ---
             inner_r = self.radius_outer - 18
             outer_r = self.radius_outer - 2
 
@@ -133,7 +113,6 @@ class OuterDisplay:
 
             self.display.draw_line(x1, y1, x2, y2, PURPLE_TICK)
 
-            # --- мелкие риски между большими ---
             if i < num_major - 1 and num_minor > 0:
                 step_minor = step_major / (num_minor + 1)
 
@@ -153,16 +132,12 @@ class OuterDisplay:
 
     def draw_background(self):
         self.display.clear(BLACK)
-        # верхний прибор — скорость
         self.draw_one_background(self.cx_speed, self.cy_speed, "KM/H")
-        # нижний прибор — обороты
         self.draw_one_background(self.cx_rpm, self.cy_rpm, "RPM")
 
-        # индикаторы поворотников (выключены)
         self.draw_turn_signals(False, False)
 
     def draw_number_center(self, cx, cy, text):
-        """Стираем прямоугольник в центре и пишем число."""
         w = len(text) * 8
         h = 8
         x0 = cx - w // 2
@@ -170,70 +145,51 @@ class OuterDisplay:
         self.fill_rect_fast(x0 - 2, y0 - 2, w + 4, h + 4, BLACK)
         self.display.draw_text8x8(x0, y0, text, GREEN, BLACK, rotate=90)
 
-    # ---------- поворотники на экране ----------
-
     def _draw_turn_arrow(self, x, y, on, is_left, prev_attr_name):
-        """Рисует индикатор поворотника в виде стрелки."""
         prev = getattr(self, prev_attr_name)
 
-        # если состояние не изменилось — не перерисовываем
         if prev is not None and prev == on:
             return
 
-        # размеры стрелки
-        w = 10   # длина
-        h = 6    # полувысота
+        w = 10
+        h = 6
 
-        # очищаем область вокруг стрелки
         self.fill_rect_fast(x - w - 3, y - h - 3, 2 * (w + 3), 2 * (h + 3), BLACK)
 
-        # цвет включён/выключен
         color_on = GREEN_TICK
         color_off = color565(40, 40, 40)
         col = color_on if on else color_off
 
-        # координаты треугольника
         if is_left:
-            p1 = (x,     y - h)   # острие ВВЕРХ
-            p2 = (x - w, y + h)   # левый нижний
-            p3 = (x + w, y + h)   # правый нижний
+            p1 = (x, y - h)
+            p2 = (x - w, y + h)
+            p3 = (x + w, y + h)
         else:
-            # такая же, просто другая запись — обе вниз
-            p1 = (x,     y + h)
+            p1 = (x, y + h)
             p2 = (x - w, y - h)
             p3 = (x + w, y - h)
 
-
-        # рисуем контур треугольника (3 линии)
         self.display.draw_line(p1[0], p1[1], p2[0], p2[1], col)
         self.display.draw_line(p2[0], p2[1], p3[0], p3[1], col)
         self.display.draw_line(p3[0], p3[1], p1[0], p1[1], col)
 
         setattr(self, prev_attr_name, on)
 
-
     def draw_turn_signals(self, left_on, right_on):
         self._draw_turn_arrow(self.turn_left_x,  self.turn_left_y,  left_on,  True,  "prev_left_on")
         self._draw_turn_arrow(self.turn_right_x, self.turn_right_y, right_on, False, "prev_right_on")
 
-
-    # ---------- стрелки ----------
-
     def _value_to_angle_deg(self, value, max_value):
-        """
-        Преобразуем значение (0..max_value) в угол стрелки,
-        направление инвертировано (двигается в противоположную сторону).
-        """
+
         if max_value <= 0:
             return 225
 
         ratio = value / max_value
         ratio = max(0, min(1, ratio))
 
-        start_angle = 225       # начальная точка
-        total_span = 270        # полный ход
+        start_angle = 225
+        total_span = 270
 
-        # инвертированное направление
         angle = start_angle + ratio * total_span
 
         return angle
@@ -241,14 +197,11 @@ class OuterDisplay:
     def _draw_needle(self, cx, cy, value, max_value, color, prev_value_attr_name):
         prev_value = getattr(self, prev_value_attr_name)
 
-        # если нет изменения — не перерисовываем
         if prev_value is not None and prev_value == value:
             return
 
-        # длина стрелки (80% круга)
         needle_len = int(self.radius_outer * 0.8)
 
-        # стереть старую
         if prev_value is not None:
             prev_angle_deg = self._value_to_angle_deg(prev_value, max_value)
             prev_rad = math.radians(prev_angle_deg)
@@ -256,7 +209,6 @@ class OuterDisplay:
             py = int(cy + needle_len * math.sin(prev_rad))
             self.display.draw_line(cx, cy, px, py, BLACK)
 
-        # нарисовать новую
         angle_deg = self._value_to_angle_deg(value, max_value)
         rad = math.radians(angle_deg)
         x = int(cx + needle_len * math.cos(rad))
@@ -265,21 +217,18 @@ class OuterDisplay:
 
         setattr(self, prev_value_attr_name, value)
 
-    # ---------- публичный метод: обновить по скорости ----------
-
     def update(self, speed, rpm, max_speed, max_rpm):
-        # ограничения (можно и тут, но лучше в ESP32)
         if speed < 0: speed = 0
         if rpm < 0: rpm = 0
         if speed > max_speed: speed = max_speed
         if rpm > max_rpm: rpm = max_rpm
 
-        # SPEED
+        # speed
         self._draw_needle(self.cx_speed, self.cy_speed, speed, max_speed,
                           SPEED_COLOR, "prev_speed_value")
         self.draw_number_center(self.cx_speed, self.cy_speed, "{:3d}".format(int(speed)))
 
-        # RPM
+        # rpm
         self._draw_needle(self.cx_rpm, self.cy_rpm, rpm, max_rpm,
                           WHITE, "prev_rpm_value")
         self.draw_number_center(self.cx_rpm, self.cy_rpm, "{:4d}".format(int(rpm)))
@@ -300,12 +249,12 @@ class InnerDisplay:
 
         self.sw, self.sh = self.size()
 
-        # --- иконка: буфер создаём ОДИН раз ---
+        # icon
         self._icon_buf = bytearray(self.ICON_W * self.ICON_H * 2)
-        self._icon_ready = False     # буфер заполнен?
-        self._icon_src_id = None     # чтобы не переконвертировать ту же иконку
+        self._icon_ready = False
+        self._icon_src_id = None
 
-        # топливо
+        # fuel
         self.icon_x = 0
         self.icon_y = 0
         self.fuel_x = 0
@@ -321,13 +270,8 @@ class InnerDisplay:
 
         self.prev_fuel_bars = None
 
-
-        # ---------- UI: иконка + топливо ----------
         self.center_icon_48(gas)
         self.fuel_ui_init()
-
-
-    # ---------- low-level helpers ----------
 
     def _backlight_on(self):
         try:
@@ -377,10 +321,7 @@ class InnerDisplay:
             for yy in range(y, y + h):
                 d.draw_hline(x, yy, w, color)
 
-    # ---------- icon (cached) ----------
-
     def _fill_icon_buf_from_u16(self, icon_u16):
-        """Заполняет self._icon_buf из массива RGB565 uint16 (48*48)."""
         buf = self._icon_buf
         i = 0
         for c in icon_u16:
@@ -391,36 +332,24 @@ class InnerDisplay:
         self._icon_ready = True
 
     def set_icon_48(self, icon_u16, force=False):
-        """
-        Конвертирует icon_u16 -> self._icon_buf (ОДИН раз).
-        Если вызываешь с той же иконкой повторно — переконвертации не будет.
-        """
         src_id = id(icon_u16)
         if (not force) and self._icon_ready and (self._icon_src_id == src_id):
             return
-
-        # (опционально) можно проверить длину, но это чуть медленнее
-        # if len(icon_u16) != self.ICON_W * self.ICON_H:
-        #     raise ValueError("icon_u16 must be 48*48 uint16")
 
         self._fill_icon_buf_from_u16(icon_u16)
         self._icon_src_id = src_id
 
     def blit_icon_48(self, x, y):
-        """Рисует уже готовый буфер (без конвертации)."""
         if not self._icon_ready:
             return
         self.display.blit_buffer(self._icon_buf, int(x), int(y), self.ICON_W, self.ICON_H)
 
     def center_icon_48(self, icon_u16):
-        """Центрирует иконку. Конвертирует только 1 раз (если иконка та же)."""
         self.icon_x = (self.sw // 2) - (self.ICON_W // 2)
         self.icon_y = (self.sh // 2) - (self.ICON_H // 2)
 
-        self.set_icon_48(icon_u16)          # заполнит буфер только при необходимости
+        self.set_icon_48(icon_u16)
         self.blit_icon_48(self.icon_x, self.icon_y)
-
-    # ---------- fuel bars ----------
 
     def fuel_ui_init(self):
         self.fuel_x = self.icon_x + self.ICON_W + 8
@@ -460,14 +389,11 @@ class InnerDisplay:
         self.prev_fuel_bars = bars
 
 
-
 class ESP32:
     def __init__(self, outer_display: OuterDisplay, max_speed, max_rpm, idle_rpm):
 
-        # ---------- встроенный дисплей в отдельном классе ----------
         self.display = InnerDisplay(display_lilygo_config, bg=0x0000)
 
-        # ---------- состояния ----------
         self.outer_display = outer_display
 
         self.max_speed = max_speed
@@ -481,11 +407,11 @@ class ESP32:
         self.display.draw_fuel_bars(self.curr_fuel)
         self.outer_display.update(self.curr_speed, self.curr_rpm, self.max_speed, self.max_rpm)
 
-        # --- заправка ---
+        # заправка
         self.REFUEL_RATE_PER_SEC = 10
         self.last_refuel_ms = time.ticks_ms()
 
-        # --- расход топлива от RPM ---
+        # расход топлива от RPM
         self.FUEL_BASE_PER_SEC = 0.1
         self.FUEL_MAX_PER_SEC  = 0.9
         self.last_fuel_ms = time.ticks_ms()
@@ -496,7 +422,7 @@ class ESP32:
         self.DECAY_STEP_KMH = 1
         self.last_decay_ms = time.ticks_ms()
 
-        # кнопка "газ" (разгон)
+        # кнопка "газ"
         self._btn_turn_pressed = False
         self.btn_turn = Pin(12, Pin.IN, Pin.PULL_UP)
         self.btn_turn.irq(trigger=Pin.IRQ_FALLING, handler=self._btn_turn_irq)
@@ -504,64 +430,54 @@ class ESP32:
         # кнопка "заправки"
         self.btn_gas = Pin(32, Pin.IN, Pin.PULL_UP)
 
-        # --- пищалка (buzzer) ---
+        # пищалка
         self.buzzer = Pin(17, Pin.OUT)
         self.buzzer.off()
         self.BUZZER_INTERVAL_MS = 400
         self.last_buzzer_ms = time.ticks_ms()
         self.buzzer_state = False
 
-        # --- поворотники: светодиоды ---
+        #  поворотники (светодиоды)
         self.led_right = Pin(25, Pin.OUT)
         self.led_left  = Pin(26, Pin.OUT)
         self.led_right.off()
         self.led_left.off()
 
-        # --- поворотники: кнопки ---
+        # поворотники (кнопки)
         self.btn_left  = Pin(0,  Pin.IN, Pin.PULL_UP)
         self.btn_right = Pin(35, Pin.IN, Pin.PULL_UP)
 
-        # --- мигание поворотников ---
+        # мигание поворотников
         self.BLINK_INTERVAL_MS = 500
         self.last_blink_ms = time.ticks_ms()
         self.blink_state = False
 
-        # --- колебания оборотов на холостом ---
-        self.IDLE_WOBBLE_AMPL = 120        # амплитуда ± (подбери)
-        self.IDLE_WOBBLE_PERIOD_MS = 900   # период "волны"
-        self.IDLE_NOISE_AMPL = 25          # мелкий шум ±
-        self.IDLE_UPDATE_MS = 120          # как часто обновлять приборы на месте
+        # колебания оборотов
+        self.IDLE_WOBBLE_AMPL = 80
+        self.IDLE_WOBBLE_PERIOD_MS = 900
+        self.IDLE_NOISE_AMPL = 25
+        self.IDLE_UPDATE_MS = 120
         self.last_idle_ms = time.ticks_ms()
 
-
-
-    # =================== IRQ ===================
-
+    # <---------- IRQ ---------->
     def _btn_turn_irq(self, pin):
         self._btn_turn_pressed = True
 
-    # =================== логика ===================
-
+   # <---------- Логика оборотов ---------->
     def compute_rpm(self, curr_speed, curr_fuel):
-        # нет топлива -> двигатель заглох
         if curr_fuel <= 0:
             return 0
 
-        # есть топливо, но стоим -> холостой ход (скачки)
         if curr_speed <= 0:
             now = time.ticks_ms()
 
-            # плавная волна
             phase = (now % self.IDLE_WOBBLE_PERIOD_MS) / self.IDLE_WOBBLE_PERIOD_MS
             wobble = math.sin(2 * math.pi * phase) * self.IDLE_WOBBLE_AMPL
 
-            # мелкий "шум" без random (быстро и просто)
-            # диапазон примерно [-IDLE_NOISE_AMPL .. +IDLE_NOISE_AMPL]
             noise = ((now // 37) % (2 * self.IDLE_NOISE_AMPL + 1)) - self.IDLE_NOISE_AMPL
 
             rpm = self.idle_rpm + wobble + noise
 
-            # ограничим разумно
             if rpm < 0:
                 rpm = 0
             if rpm > self.max_rpm:
@@ -569,13 +485,10 @@ class ESP32:
 
             return int(rpm)
 
-        # едем -> растёт от скорости
         ratio = curr_speed / self.max_speed
         ratio = max(0, min(1, ratio))
         rpm = self.idle_rpm + ratio * (self.max_rpm - self.idle_rpm)
         return int(rpm)
-
-
 
     def process(self):
         changed = False
@@ -611,7 +524,7 @@ class ESP32:
         else:
             self.last_refuel_ms = now
 
-            # 2) Газ (разгон) только если есть топливо
+            # 2) Газ только если есть топливо
             if self._btn_turn_pressed:
                 self._btn_turn_pressed = False
                 if self.curr_fuel > 0:
@@ -631,7 +544,7 @@ class ESP32:
                     self.curr_speed = 0
                 changed = True
 
-        # 4) Расход топлива от RPM (только если не заправляемся и едем)
+        # 4) Расход топлива от RPM
         if (not gas_pressed) and self.curr_speed > 0 and self.curr_fuel > 0:
             self.curr_rpm = self.compute_rpm(self.curr_speed, self.curr_fuel)
 
@@ -650,7 +563,7 @@ class ESP32:
         else:
             self.last_fuel_ms = now
 
-        # 4.5) Пищалка при пустом баке
+        # 5) Пищалка при пустом баке
         if self.curr_fuel <= 0:
             if time.ticks_diff(now, self.last_buzzer_ms) >= self.BUZZER_INTERVAL_MS:
                 self.last_buzzer_ms = now
@@ -660,7 +573,7 @@ class ESP32:
             self.buzzer_state = False
             self.buzzer.off()
 
-        # 5) Поворотники
+        # 6) Поворотники
         if left_pressed or right_pressed:
             if time.ticks_diff(now, self.last_blink_ms) >= self.BLINK_INTERVAL_MS:
                 self.last_blink_ms = now
@@ -683,7 +596,7 @@ class ESP32:
             right_on=(right_pressed and self.blink_state)
         )
 
-        # --- холостой ход: обновляем RPM даже без changed ---
+        # 7) Холостой ход
         if (self.curr_speed <= 0) and (self.curr_fuel > 0) and (not gas_pressed):
             if time.ticks_diff(now, self.last_idle_ms) >= self.IDLE_UPDATE_MS:
                 self.last_idle_ms = now
@@ -692,14 +605,12 @@ class ESP32:
                     self.curr_rpm = new_rpm
                     self.outer_display.update(self.curr_speed, self.curr_rpm, self.max_speed, self.max_rpm)
 
-
-        # 6) Обновление приборов + палочки топлива
+        # 8) Обновление приборов
         if changed:
             self.curr_rpm = self.compute_rpm(self.curr_speed, self.curr_fuel)
 
             self.outer_display.update(self.curr_speed, self.curr_rpm, self.max_speed, self.max_rpm)
             self.display.draw_fuel_bars(self.curr_fuel)
-
 
 
 if __name__ == "__main__":
