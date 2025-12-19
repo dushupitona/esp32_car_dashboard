@@ -1,3 +1,6 @@
+# повысить расход
+# сделать на холостом ходе обороты = 800, а при отсутствии топлива = 0
+
 from machine import Pin
 import time
 import math
@@ -282,39 +285,153 @@ class OuterDisplay:
         self.draw_number_center(self.cx_rpm, self.cy_rpm, "{:4d}".format(int(rpm)))
 
 
-def draw_icon_48x48(display, icon_u16, x, y, w=48, h=48):
-    """
-    icon_u16: список/array из RGB565 uint16 (len = 48*48)
-    """
-    buf = bytearray(w * h * 2)
-    i = 0
-    for c in icon_u16:
-        buf[i]     = (c >> 8) & 0xFF   # старший байт
-        buf[i + 1] = c & 0xFF          # младший байт
-        i += 2
+class InnerDisplay:
+    def __init__(self, display_factory, bg=0x0000):
+        gc.collect()
+        self.display = display_factory()
+        self.display.init()
+        self._backlight_on()
 
-    display.blit_buffer(buf, x, y, w, h)
+        self.bg = bg
+        self.clear(self.bg)
+
+        self.sw, self.sh = self.size()
+
+        # топливо
+        self.icon_x = 0
+        self.icon_y = 0
+        self.fuel_x = 0
+        self.fuel_y = 0
+        self.fuel_bar_w = 14
+        self.fuel_bar_h = 6
+        self.fuel_gap = 4
+
+        self.FUEL_ON  = 0x07E0
+        self.FUEL_OFF = 0x2104
+        self.FUEL_BG  = self.bg
+        self.FUEL_OUT = 0xFFFF
+
+        self.prev_fuel_bars = None
+
+    # ---------- low-level helpers ----------
+
+    def _backlight_on(self):
+        try:
+            self.display.backlight_on()
+        except AttributeError:
+            try:
+                self.display.backlight.on()
+            except Exception:
+                pass
+
+    def size(self):
+        d = self.display
+        if hasattr(d, "width") and callable(d.width):
+            w = d.width()
+        else:
+            w = getattr(d, "width", 240)
+
+        if hasattr(d, "height") and callable(d.height):
+            h = d.height()
+        else:
+            h = getattr(d, "height", 135)
+
+        return int(w), int(h)
+
+    def clear(self, color=0x0000):
+        d = self.display
+        try:
+            d.fill(color)
+        except AttributeError:
+            try:
+                d.clear(color)
+            except Exception:
+                pass
+
+    def fill_rect(self, x, y, w, h, color):
+        x = int(x); y = int(y); w = int(w); h = int(h)
+        if w <= 0 or h <= 0:
+            return
+
+        d = self.display
+        if hasattr(d, "fill_rect"):
+            d.fill_rect(x, y, w, h, color)
+        elif hasattr(d, "hline"):
+            for yy in range(y, y + h):
+                d.hline(x, yy, w, color)
+        else:
+            for yy in range(y, y + h):
+                d.draw_hline(x, yy, w, color)
+
+    # ---------- icon ----------
+
+    def draw_icon_u16(self, icon_u16, x, y, w=48, h=48):
+        """
+        icon_u16: список/array из RGB565 uint16 (len = w*h)
+        """
+        buf = bytearray(w * h * 2)
+        i = 0
+        for c in icon_u16:
+            buf[i]     = (c >> 8) & 0xFF
+            buf[i + 1] = c & 0xFF
+            i += 2
+        self.display.blit_buffer(buf, int(x), int(y), int(w), int(h))
+
+    def center_icon_48(self, icon_u16):
+        self.icon_x = (self.sw // 2) - 24
+        self.icon_y = (self.sh // 2) - 24
+        self.draw_icon_u16(icon_u16, self.icon_x, self.icon_y, 48, 48)
+
+    # ---------- fuel bars ----------
+
+    def fuel_ui_init(self):
+        # справа от иконки, по центру иконки
+        self.fuel_x = self.icon_x + 48 + 8
+        self.fuel_y = self.icon_y + 18
+
+    def _fuel_to_bars(self, fuel_percent):
+        if fuel_percent <= 0:
+            return 0
+        if fuel_percent <= 33:
+            return 1
+        if fuel_percent <= 66:
+            return 2
+        return 3
+
+    def draw_fuel_bars(self, fuel_percent):
+        bars = self._fuel_to_bars(fuel_percent)
+        if self.prev_fuel_bars is not None and bars == self.prev_fuel_bars:
+            return
+
+        total_w = 3 * self.fuel_bar_w + 2 * self.fuel_gap + 6
+        total_h = self.fuel_bar_h + 6
+        self.fill_rect(self.fuel_x - 3, self.fuel_y - 3, total_w, total_h, self.FUEL_BG)
+
+        d = self.display
+        for i in range(3):
+            x = self.fuel_x + i * (self.fuel_bar_w + self.fuel_gap)
+            y = self.fuel_y
+
+            # off
+            self.fill_rect(x, y, self.fuel_bar_w, self.fuel_bar_h, self.FUEL_OFF)
+
+            # on
+            if i < bars:
+                self.fill_rect(x, y, self.fuel_bar_w, self.fuel_bar_h, self.FUEL_ON)
+
+            # frame
+            if hasattr(d, "rect"):
+                d.rect(int(x), int(y), int(self.fuel_bar_w), int(self.fuel_bar_h), self.FUEL_OUT)
+
+        self.prev_fuel_bars = bars
 
 
 class ESP32:
     def __init__(self, outer_display, max_speed, max_rpm, idle_rpm):
-        # ---------- встроенный ST7789 ----------
-        gc.collect()
-        self.display1 = display_lilygo_config()
-        self.display1.init()
-        try:
-            self.display1.backlight_on()
-        except AttributeError:
-            try:
-                self.display1.backlight.on()
-            except:
-                pass
 
-        # очистка
-        self._d1_clear(0x0000)
-
-        # размеры экрана (безопасно для разных драйверов)
-        sw, sh = self._disp_size()
+        # ---------- встроенный дисплей в отдельном классе ----------
+        self.display = InnerDisplay(display_lilygo_config, bg=0x0000)
+        sw, sh = self.display.sw, self.display.sh
 
         # ---------- состояния ----------
         self.outer = outer_display
@@ -327,15 +444,10 @@ class ESP32:
         self.max_rpm = max_rpm
         self.idle_rpm = idle_rpm
 
-        # ---------- иконка газа ----------
-        self.icon_x = (sw // 2) - 24
-        self.icon_y = (sh // 2) - 24
-        draw_icon_48x48(self.display1, gas, self.icon_x, self.icon_y)
-
-        # ---------- индикатор топлива (3 палочки рядом с иконкой) ----------
-        self.prev_fuel_bars = None
-        self._fuel_ui_init(sw, sh)
-        self._draw_fuel_bars(self.curr_fuel)
+        # ---------- UI: иконка + топливо ----------
+        self.display.center_icon_48(gas)
+        self.display.fuel_ui_init()
+        self.display.draw_fuel_bars(self.curr_fuel)
 
         # --- заправка ---
         self.REFUEL_RATE_PER_SEC = 10
@@ -363,20 +475,18 @@ class ESP32:
         # --- пищалка (buzzer) ---
         self.buzzer = Pin(17, Pin.OUT)
         self.buzzer.off()
-
-        self.BUZZER_INTERVAL_MS = 400   # период бипа
+        self.BUZZER_INTERVAL_MS = 400
         self.last_buzzer_ms = time.ticks_ms()
         self.buzzer_state = False
 
-
         # --- поворотники: светодиоды ---
         self.led_right = Pin(25, Pin.OUT)
-        self.led_left = Pin(26, Pin.OUT)
+        self.led_left  = Pin(26, Pin.OUT)
         self.led_right.off()
         self.led_left.off()
 
         # --- поворотники: кнопки ---
-        self.btn_left = Pin(0, Pin.IN, Pin.PULL_UP)
+        self.btn_left  = Pin(0,  Pin.IN, Pin.PULL_UP)
         self.btn_right = Pin(35, Pin.IN, Pin.PULL_UP)
 
         # --- мигание поворотников ---
@@ -387,121 +497,6 @@ class ESP32:
         # стартовый вывод приборов
         self.curr_rpm = self.compute_rpm(self.curr_speed)
         self.outer.update(self.curr_speed, self.curr_rpm, self.max_speed, self.max_rpm)
-
-    # =================== утилиты дисплея ST7789 ===================
-
-    def _disp_size(self):
-        d = self.display1
-        if hasattr(d, "width") and callable(d.width):
-            w = d.width()
-        else:
-            w = getattr(d, "width", 240)
-
-        if hasattr(d, "height") and callable(d.height):
-            h = d.height()
-        else:
-            h = getattr(d, "height", 135)
-
-        return int(w), int(h)
-
-    def _d1_clear(self, color=0x0000):
-        d = self.display1
-        try:
-            d.fill(color)
-        except AttributeError:
-            try:
-                d.clear(color)
-            except:
-                pass
-
-    def _d1_fill_rect(self, x, y, w, h, color):
-        x = int(x); y = int(y); w = int(w); h = int(h)
-        if w <= 0 or h <= 0:
-            return
-        d = self.display1
-        if hasattr(d, "fill_rect"):
-            d.fill_rect(x, y, w, h, color)
-        elif hasattr(d, "hline"):
-            for yy in range(y, y + h):
-                d.hline(x, yy, w, color)
-        else:
-            for yy in range(y, y + h):
-                d.draw_hline(x, yy, w, color)
-
-    # =================== топливо: 3 палочки ===================
-
-    def _fuel_ui_init(self, sw, sh):
-        # справа от иконки
-        self.fuel_x = self.icon_x + 48 + 8
-        # по центру иконки
-        self.fuel_y = self.icon_y + 18
-
-        # --- ГОРИЗОНТАЛЬНЫЕ палочки ---
-        self.fuel_bar_w = 14   # ширина (СДЕЛАЛИ ШИРЕ)
-        self.fuel_bar_h = 6    # высота
-        self.fuel_gap = 4      # расстояние между палочками
-
-        self.FUEL_ON  = 0x07E0   # зелёный
-        self.FUEL_OFF = 0x2104   # тёмно-серый
-        self.FUEL_BG  = 0x0000   # чёрный
-        self.FUEL_OUT = 0xFFFF   # рамка
-
-
-    def _fuel_to_bars(self, fuel_percent):
-        if fuel_percent <= 0:
-            return 0
-        if fuel_percent <= 33:
-            return 1
-        if fuel_percent <= 66:
-            return 2
-        return 3
-
-    def _draw_fuel_bars(self, fuel_percent):
-        bars = self._fuel_to_bars(fuel_percent)
-        if self.prev_fuel_bars is not None and bars == self.prev_fuel_bars:
-            return
-
-        # очистить область
-        total_w = 3 * self.fuel_bar_w + 2 * self.fuel_gap + 6
-        total_h = self.fuel_bar_h + 6
-        self._d1_fill_rect(
-            self.fuel_x - 3,
-            self.fuel_y - 3,
-            total_w,
-            total_h,
-            self.FUEL_BG
-        )
-
-        d = self.display1
-
-        for i in range(3):
-            # --- ГОРИЗОНТАЛЬНО ---
-            x = self.fuel_x + i * (self.fuel_bar_w + self.fuel_gap)
-            y = self.fuel_y
-
-            # выключенная палочка
-            self._d1_fill_rect(
-                x, y,
-                self.fuel_bar_w,
-                self.fuel_bar_h,
-                self.FUEL_OFF
-            )
-
-            # включенная
-            if i < bars:
-                self._d1_fill_rect(
-                    x, y,
-                    self.fuel_bar_w,
-                    self.fuel_bar_h,
-                    self.FUEL_ON
-                )
-
-            # рамка
-            if hasattr(d, "rect"):
-                d.rect(x, y, self.fuel_bar_w, self.fuel_bar_h, self.FUEL_OUT)
-
-        self.prev_fuel_bars = bars
-
 
     # =================== IRQ ===================
 
@@ -522,36 +517,24 @@ class ESP32:
         changed = False
         now = time.ticks_ms()
 
-        # --- кнопки поворотников (0 = нажата) ---
-        left_pressed = (self.btn_left.value() == 0)
+        left_pressed  = (self.btn_left.value() == 0)
         right_pressed = (self.btn_right.value() == 0)
+        gas_pressed   = (self.btn_gas.value() == 0)
 
-        # --- кнопка заправки ---
-        gas_pressed = (self.btn_gas.value() == 0)
-
-        # 0) если бак пустой — разгон запрещён (но скорость НЕ обнуляем резко)
         if self.curr_fuel <= 0:
             self._btn_turn_pressed = False
 
-        # =========================
-        # 1) Взаимоисключение: заправка VS движение
-        #    Заправка ТОЛЬКО при speed==0
-        # =========================
+        # 1) Заправка только при speed==0
         if gas_pressed:
-            # разгон игнорируем
             self._btn_turn_pressed = False
 
             if self.curr_speed > 0:
-                # едем -> заправка запрещена, только тормозим к 0
                 self.curr_speed -= 2
                 if self.curr_speed < 0:
                     self.curr_speed = 0
                 changed = True
-
-                # не накапливаем время "заправки" пока тормозим
                 self.last_refuel_ms = now
             else:
-                # стоим -> можно заправляться
                 dt_ms = time.ticks_diff(now, self.last_refuel_ms)
                 if dt_ms >= 1000:
                     steps = dt_ms // 1000
@@ -560,19 +543,13 @@ class ESP32:
                     self.curr_fuel += steps * self.REFUEL_RATE_PER_SEC
                     if self.curr_fuel > 100:
                         self.curr_fuel = 100
-
                     changed = True
         else:
-            # не заправляемся — сбрасываем таймер заправки
             self.last_refuel_ms = now
 
-            # =========================
-            # 2) Газ: кнопка увеличивает скорость (ТОЛЬКО если есть топливо)
-            # =========================
+            # 2) Газ (разгон) только если есть топливо
             if self._btn_turn_pressed:
                 self._btn_turn_pressed = False
-
-                # если топлива нет — просто игнорируем разгон (без резкого stop)
                 if self.curr_fuel > 0:
                     if self.curr_speed < self.max_speed:
                         self.curr_speed += 5
@@ -580,12 +557,9 @@ class ESP32:
                             self.curr_speed = self.max_speed
                         changed = True
 
-        # =========================
         # 3) Затухание скорости
-        # =========================
         if time.ticks_diff(now, self.last_decay_ms) >= self.DECAY_INTERVAL_MS:
             self.last_decay_ms = now
-
             if self.curr_speed > 0:
                 step = self.NO_FUEL_DECAY_STEP if (self.curr_fuel <= 0) else self.DECAY_STEP_KMH
                 self.curr_speed -= step
@@ -593,9 +567,7 @@ class ESP32:
                     self.curr_speed = 0
                 changed = True
 
-        # =========================
-        # 4) Расход топлива от RPM (только если НЕ заправляемся и едем)
-        # =========================
+        # 4) Расход топлива от RPM (только если не заправляемся и едем)
         if (not gas_pressed) and self.curr_speed > 0 and self.curr_fuel > 0:
             self.curr_rpm = self.compute_rpm(self.curr_speed)
 
@@ -607,35 +579,24 @@ class ESP32:
             dt_ms = time.ticks_diff(now, self.last_fuel_ms)
             if dt_ms > 0:
                 self.last_fuel_ms = now
-
                 self.curr_fuel -= burn_per_sec * (dt_ms / 1000.0)
                 if self.curr_fuel < 0:
                     self.curr_fuel = 0
-
-                # ВАЖНО: НЕ обнуляем скорость мгновенно — докатываемся через затухание
                 changed = True
         else:
-            # чтобы не накапливался dt, когда стоим/заправляемся
             self.last_fuel_ms = now
 
-    
-        # =========================
         # 4.5) Пищалка при пустом баке
-        # =========================
         if self.curr_fuel <= 0:
             if time.ticks_diff(now, self.last_buzzer_ms) >= self.BUZZER_INTERVAL_MS:
                 self.last_buzzer_ms = now
                 self.buzzer_state = not self.buzzer_state
                 self.buzzer.value(1 if self.buzzer_state else 0)
         else:
-            # топливо появилось — пищалку выключаем
             self.buzzer_state = False
             self.buzzer.off()
 
-
-        # =========================
         # 5) Поворотники
-        # =========================
         if left_pressed or right_pressed:
             if time.ticks_diff(now, self.last_blink_ms) >= self.BLINK_INTERVAL_MS:
                 self.last_blink_ms = now
@@ -658,9 +619,7 @@ class ESP32:
             right_on=(right_pressed and self.blink_state)
         )
 
-        # =========================
         # 6) Обновление приборов + палочки топлива
-        # =========================
         if changed:
             if self.curr_fuel <= 0:
                 self.curr_rpm = 0
@@ -668,7 +627,8 @@ class ESP32:
                 self.curr_rpm = self.compute_rpm(self.curr_speed)
 
             self.outer.update(self.curr_speed, self.curr_rpm, self.max_speed, self.max_rpm)
-            self._draw_fuel_bars(self.curr_fuel)
+            self.display.draw_fuel_bars(self.curr_fuel)
+
 
 
 
