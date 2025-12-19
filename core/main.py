@@ -286,6 +286,9 @@ class OuterDisplay:
 
 
 class InnerDisplay:
+    ICON_W = 48
+    ICON_H = 48
+
     def __init__(self, display_factory, bg=0x0000):
         gc.collect()
         self.display = display_factory()
@@ -296,6 +299,11 @@ class InnerDisplay:
         self.clear(self.bg)
 
         self.sw, self.sh = self.size()
+
+        # --- иконка: буфер создаём ОДИН раз ---
+        self._icon_buf = bytearray(self.ICON_W * self.ICON_H * 2)
+        self._icon_ready = False     # буфер заполнен?
+        self._icon_src_id = None     # чтобы не переконвертировать ту же иконку
 
         # топливо
         self.icon_x = 0
@@ -312,6 +320,12 @@ class InnerDisplay:
         self.FUEL_OUT = 0xFFFF
 
         self.prev_fuel_bars = None
+
+
+        # ---------- UI: иконка + топливо ----------
+        self.center_icon_48(gas)
+        self.fuel_ui_init()
+
 
     # ---------- low-level helpers ----------
 
@@ -363,30 +377,53 @@ class InnerDisplay:
             for yy in range(y, y + h):
                 d.draw_hline(x, yy, w, color)
 
-    # ---------- icon ----------
+    # ---------- icon (cached) ----------
 
-    def draw_icon_u16(self, icon_u16, x, y, w=48, h=48):
-        """
-        icon_u16: список/array из RGB565 uint16 (len = w*h)
-        """
-        buf = bytearray(w * h * 2)
+    def _fill_icon_buf_from_u16(self, icon_u16):
+        """Заполняет self._icon_buf из массива RGB565 uint16 (48*48)."""
+        buf = self._icon_buf
         i = 0
         for c in icon_u16:
             buf[i]     = (c >> 8) & 0xFF
             buf[i + 1] = c & 0xFF
             i += 2
-        self.display.blit_buffer(buf, int(x), int(y), int(w), int(h))
+
+        self._icon_ready = True
+
+    def set_icon_48(self, icon_u16, force=False):
+        """
+        Конвертирует icon_u16 -> self._icon_buf (ОДИН раз).
+        Если вызываешь с той же иконкой повторно — переконвертации не будет.
+        """
+        src_id = id(icon_u16)
+        if (not force) and self._icon_ready and (self._icon_src_id == src_id):
+            return
+
+        # (опционально) можно проверить длину, но это чуть медленнее
+        # if len(icon_u16) != self.ICON_W * self.ICON_H:
+        #     raise ValueError("icon_u16 must be 48*48 uint16")
+
+        self._fill_icon_buf_from_u16(icon_u16)
+        self._icon_src_id = src_id
+
+    def blit_icon_48(self, x, y):
+        """Рисует уже готовый буфер (без конвертации)."""
+        if not self._icon_ready:
+            return
+        self.display.blit_buffer(self._icon_buf, int(x), int(y), self.ICON_W, self.ICON_H)
 
     def center_icon_48(self, icon_u16):
-        self.icon_x = (self.sw // 2) - 24
-        self.icon_y = (self.sh // 2) - 24
-        self.draw_icon_u16(icon_u16, self.icon_x, self.icon_y, 48, 48)
+        """Центрирует иконку. Конвертирует только 1 раз (если иконка та же)."""
+        self.icon_x = (self.sw // 2) - (self.ICON_W // 2)
+        self.icon_y = (self.sh // 2) - (self.ICON_H // 2)
+
+        self.set_icon_48(icon_u16)          # заполнит буфер только при необходимости
+        self.blit_icon_48(self.icon_x, self.icon_y)
 
     # ---------- fuel bars ----------
 
     def fuel_ui_init(self):
-        # справа от иконки, по центру иконки
-        self.fuel_x = self.icon_x + 48 + 8
+        self.fuel_x = self.icon_x + self.ICON_W + 8
         self.fuel_y = self.icon_y + 18
 
     def _fuel_to_bars(self, fuel_percent):
@@ -412,41 +449,37 @@ class InnerDisplay:
             x = self.fuel_x + i * (self.fuel_bar_w + self.fuel_gap)
             y = self.fuel_y
 
-            # off
             self.fill_rect(x, y, self.fuel_bar_w, self.fuel_bar_h, self.FUEL_OFF)
 
-            # on
             if i < bars:
                 self.fill_rect(x, y, self.fuel_bar_w, self.fuel_bar_h, self.FUEL_ON)
 
-            # frame
             if hasattr(d, "rect"):
                 d.rect(int(x), int(y), int(self.fuel_bar_w), int(self.fuel_bar_h), self.FUEL_OUT)
 
         self.prev_fuel_bars = bars
 
 
+
 class ESP32:
-    def __init__(self, outer_display, max_speed, max_rpm, idle_rpm):
+    def __init__(self, outer_display: OuterDisplay, max_speed, max_rpm, idle_rpm):
 
         # ---------- встроенный дисплей в отдельном классе ----------
         self.display = InnerDisplay(display_lilygo_config, bg=0x0000)
         sw, sh = self.display.sw, self.display.sh
 
         # ---------- состояния ----------
-        self.outer = outer_display
+        self.outer_display = outer_display
 
         self.curr_speed = 0
         self.curr_fuel = 0
         self.curr_rpm = 0
 
+
         self.max_speed = max_speed
         self.max_rpm = max_rpm
         self.idle_rpm = idle_rpm
 
-        # ---------- UI: иконка + топливо ----------
-        self.display.center_icon_48(gas)
-        self.display.fuel_ui_init()
         self.display.draw_fuel_bars(self.curr_fuel)
 
         # --- заправка ---
@@ -496,7 +529,7 @@ class ESP32:
 
         # стартовый вывод приборов
         self.curr_rpm = self.compute_rpm(self.curr_speed)
-        self.outer.update(self.curr_speed, self.curr_rpm, self.max_speed, self.max_rpm)
+        self.outer_display.update(self.curr_speed, self.curr_rpm, self.max_speed, self.max_rpm)
 
     # =================== IRQ ===================
 
@@ -614,7 +647,7 @@ class ESP32:
         else:
             self.led_right.off()
 
-        self.outer.draw_turn_signals(
+        self.outer_display.draw_turn_signals(
             left_on=(left_pressed and self.blink_state),
             right_on=(right_pressed and self.blink_state)
         )
@@ -626,11 +659,8 @@ class ESP32:
             else:
                 self.curr_rpm = self.compute_rpm(self.curr_speed)
 
-            self.outer.update(self.curr_speed, self.curr_rpm, self.max_speed, self.max_rpm)
+            self.outer_display.update(self.curr_speed, self.curr_rpm, self.max_speed, self.max_rpm)
             self.display.draw_fuel_bars(self.curr_fuel)
-
-
-
 
 
 if __name__ == "__main__":
